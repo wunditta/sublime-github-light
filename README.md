@@ -38,7 +38,7 @@ Commits are made directly on the branch with the Git Data API (blobs → tree �
 
 ## Commands
 
-All in Tools › GitHub Light and in the Command Palette as "GitHub Light: …".
+All in Tools › GitHub Light and in the Command Palette as "GitHub Light: …". Entries that need a file in the sync folder are greyed out while another file is active. The same commands are in the text area's right-click menu (View / Blame / History Online, Commit This File) and in the side bar's right-click menu (Commit This File on a file, Commit All on the sync folder, Commit Folder on a subfolder, History Online) — there they appear only for files and folders inside the sync folder.
 
 | Command | What it does |
 |---|---|

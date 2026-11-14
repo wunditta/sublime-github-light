@@ -236,7 +236,8 @@ class Api(object):
         return commit["sha"]
 
     def tags(self):
-        return [t["name"] for t in self.call("GET", self.r("/tags?per_page=100"))]
+        """[(name, commit sha)] of the newest 100 tags"""
+        return [(t["name"], t["commit"]["sha"]) for t in self.call("GET", self.r("/tags?per_page=100"))]
 
     def tag_target(self, name):
         """sha the tag points to, or None if the tag does not exist"""
@@ -296,6 +297,19 @@ def prepare(window):
     return api, folder
 
 
+def inside(folder, path):
+    """is path (file or folder) inside the sync folder (or the folder itself)?"""
+    if not folder or not path:
+        return False
+    p, f = os.path.normcase(os.path.normpath(path)), os.path.normcase(folder)
+    return p == f or p.startswith(f + os.sep)
+
+
+def active_file(window):
+    v = window.active_view()
+    return v.file_name() if v else None
+
+
 def compare_url(api, state):
     if state.get("head"):
         return api.web("compare", "%s...%s" % (state["head"][:12], api.branch))
@@ -312,7 +326,7 @@ DIALOG_LINES = 12
 def latest_version(api, prefix):
     """(major, minor, patch) of the highest version tag, or None"""
     versions = []
-    for t in api.tags():
+    for t, _ in api.tags():
         m = re.fullmatch(re.escape(prefix) + r"(\d+)\.(\d+)\.(\d+)", t)
         if m:
             versions.append(tuple(int(x) for x in m.groups()))
@@ -447,26 +461,60 @@ class GhlDownloadCommand(sublime_plugin.WindowCommand):
 
 
 class GhlCommitCommand(sublime_plugin.WindowCommand):
-    """Commit the current file (scope "current") or every changed file of the folder (scope "all")."""
+    """Commit the current file (scope "current"), every changed file of the folder (scope "all"), the files given
+    by the side bar (files=[...]) or the changed files below a side bar folder (dirs=[...])."""
 
-    def run(self, scope="all"):
+    def run(self, scope="all", files=None, dirs=None, context=False):
         p = prepare(self.window)
         if not p:
             return
         api, folder = p
+        w = self.window
         candidates = None
-        if scope == "current":
-            v = self.window.active_view()
-            fn = v.file_name() if v else None
-            if not fn or not os.path.normpath(fn).startswith(folder + os.sep):
-                return error("The current file is not inside the sync folder \"%s\"" % folder)
-            if v.is_dirty():
-                if not sublime.ok_cancel_dialog("The file is not saved. Save and commit?", "Save and commit"):
+        if scope == "current" and not files and not dirs:
+            files = [active_file(w)]
+        if files:
+            chosen = [f for f in files if f and inside(folder, f) and os.path.isfile(f)]
+            if not chosen:
+                return error("The file is not inside the sync folder \"%s\"" % folder)
+            dirty = [v for v in w.views() if v.is_dirty() and v.file_name() in chosen]
+            if dirty:
+                if not sublime.ok_cancel_dialog("%s not saved. Save and commit?" % ("The file is" if len(dirty) == 1 else "%d files are" % len(dirty)), "Save and commit"):
                     return
-                v.run_command("save")
-            rel = os.path.relpath(fn, folder)
-            candidates = {to_remote(self.window, rel): fn}
+                for v in dirty:
+                    v.run_command("save")
+            candidates = {to_remote(w, os.path.relpath(f, folder)): f for f in chosen}
+        elif dirs:
+            sub = os.path.normpath(dirs[0])
+            if not inside(folder, sub):
+                return error("The folder is not inside the sync folder \"%s\"" % folder)
+            candidates = {r: f for r, f in local_files(w, folder).items() if inside(sub, f)}
         run_async(lambda: self.work(api, folder, candidates))
+
+    def is_enabled(self, scope="all", files=None, dirs=None, context=False):
+        if scope == "current" and not files and not dirs:
+            return inside(sync_folder(self.window), active_file(self.window))
+        return True
+
+    # side bar: Sublime fills "files": [] / "dirs": [] with the clicked items - an EMPTY list on the other kind of item
+    def is_visible(self, scope="all", files=None, dirs=None, context=False):
+        folder = sync_folder(self.window)
+        if files is not None:
+            return bool(files) and all(inside(folder, f) for f in files)
+        if dirs is not None:
+            return bool(dirs) and all(inside(folder, d) for d in dirs)
+        if context:
+            return self.is_enabled(scope)
+        return True
+
+    def description(self, scope="all", files=None, dirs=None, context=False):
+        if files is not None:
+            return "Commit This File\u2026" if len(files) <= 1 else "Commit These Files\u2026"
+        if dirs is not None:
+            folder = sync_folder(self.window)
+            same = dirs and folder and os.path.normcase(os.path.normpath(dirs[0])) == os.path.normcase(folder)
+            return "Commit All\u2026" if same else "Commit Folder\u2026"
+        return "Commit Current File\u2026" if scope == "current" else "Commit All\u2026"
 
     def work(self, api, folder, candidates):
         w = self.window
@@ -614,24 +662,30 @@ class GhlStatusCommand(sublime_plugin.WindowCommand):
 class GhlOpenOnlineCommand(sublime_plugin.WindowCommand):
     """Open the current file on GitHub: kind = "blob" (view), "blame" or "history"."""
 
-    def run(self, kind="blob"):
+    def run(self, kind="blob", files=None, context=False):
         p = prepare(self.window)
         if not p:
             return
         api, folder = p
         v = self.window.active_view()
-        fn = v.file_name() if v else None
-        if not fn or not os.path.normpath(fn).startswith(folder + os.sep):
-            return error("The current file is not inside the sync folder \"%s\"" % folder)
+        fn = files[0] if files else (v.file_name() if v else None)
+        if not inside(folder, fn) or not os.path.isfile(fn):
+            return error("The file is not inside the sync folder \"%s\"" % folder)
         path = to_remote(self.window, os.path.relpath(fn, folder))
         line = None
-        if kind in ("blob", "blame") and v.sel():
+        if not files and kind in ("blob", "blame") and v and v.sel():
             line = v.rowcol(v.sel()[0].begin())[0] + 1
         webbrowser.open(api.web(kind, urllib.parse.quote(path), line))
 
-    def is_enabled(self, kind="blob"):
-        v = self.window.active_view()
-        return bool(v and v.file_name())
+    def is_enabled(self, kind="blob", files=None, context=False):
+        if files is not None:
+            return len(files) == 1 and inside(sync_folder(self.window), files[0])
+        return inside(sync_folder(self.window), active_file(self.window))
+
+    def is_visible(self, kind="blob", files=None, context=False):
+        if files is not None or context:
+            return self.is_enabled(kind, files)
+        return True
 
 
 class GhlReleaseCommand(sublime_plugin.WindowCommand):
@@ -708,15 +762,23 @@ class GhlReleaseCommand(sublime_plugin.WindowCommand):
 def move_tag(window, api, name, sha):
     try:
         old = api.move_tag(name, sha)
+        tags = api.tags()
     except ApiError as e:
         return error(str(e))
+    prefix = setting(window, "tag_prefix") or ""
+    version_re = re.compile(re.escape(prefix) + r"\d+\.\d+\.\d+")
+
+    def label(commit):
+        """the commit's version tags, e.g. "v1.0.2 (62ee521)", else the short sha"""
+        names = [t for t, c in tags if c == commit and t != name and version_re.fullmatch(t)]
+        return "%s (%s)" % (", ".join(names), commit[:7]) if names else commit[:7]
     if old is None:
-        log(window, "Tag %s created at %s" % (name, sha[:7]))
+        log(window, "Tag %s created at %s" % (name, label(sha)))
     elif old == sha:
-        log(window, "Tag %s already points to %s" % (name, sha[:7]))
+        log(window, "Tag %s already points to %s" % (name, label(sha)))
     else:
-        log(window, "Tag %s moved from %s to %s" % (name, old[:7], sha[:7]))
-    ui(sublime.status_message, "GitHub Light: tag %s -> %s" % (name, sha[:7]))
+        log(window, "Tag %s moved from %s to %s" % (name, label(old), label(sha)))
+    ui(sublime.status_message, "GitHub Light: tag %s -> %s" % (name, label(sha)))
 
 
 class GhlMoveTagCommand(sublime_plugin.WindowCommand):

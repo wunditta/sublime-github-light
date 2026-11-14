@@ -1,0 +1,7 @@
+[
+    { "caption": "-", "id": "github-light-context" },
+    { "caption": "View (online)", "command": "ghl_open_online", "args": {"kind": "blob", "context": true} },
+    { "caption": "Blame (online)", "command": "ghl_open_online", "args": {"kind": "blame", "context": true} },
+    { "caption": "History (online)", "command": "ghl_open_online", "args": {"kind": "history", "context": true} },
+    { "caption": "Commit this File", "command": "ghl_commit", "args": {"scope": "current", "context": true} }
+]
