@@ -37,6 +37,15 @@
     // Prefix of the version tags Create Release makes and reads ("v" -> v1.2.3, "" -> 1.2.3).
     "tag_prefix": "v",
 
+    // Moving tag after Create Release (a tag like v1 that always points to the latest 1.x release; GitHub Actions
+    // are referenced that way: uses: owner/action@v1).
+    //   "ask":   ask after each release whether to move the major (v1) or minor (v1.2) tag
+    //   "major": move the major tag (v1) without asking
+    //   "minor": move the minor tag (v1.2) without asking
+    //   "":      never
+    //   any other text: a fixed tag name that is moved to every release (e.g. "latest")
+    "moving_tag": "ask",
+
     // Show the output panel when GitHub Light reports something.
     "show_panel_on_output": true,
 }

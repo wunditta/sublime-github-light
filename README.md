@@ -48,11 +48,16 @@ All in Tools › GitHub Light and in the Command Palette as "GitHub Light: …".
 | **Status** | Lists in the output panel what is unchanged, to commit, in conflict, untracked, new on GitHub, or missing locally. Reads from GitHub, changes nothing. |
 | **View Online** / **Blame Online** | Opens the current file on GitHub at the line the cursor is on. |
 | **History Online** | Opens the commit history of the current file on GitHub. |
-| **Create Release** | Reads the latest version tag of the repository and offers the next **patch**, **minor** and **major** version (semantic versioning: patch = backward compatible bug fixes, minor = new functionality, major = incompatible changes); `1.0.0` when there is no tag yet. Then title and optional notes, and the tag and release are created on the branch head. |
+| **Create Release** | Reads the latest version tag of the repository and offers the next **patch**, **minor** and **major** version (semantic versioning: patch = backward compatible bug fixes, minor = new functionality, major = incompatible changes); `1.0.0` when there is no tag yet. Then title and optional notes, and the tag and release are created on the branch head. Afterwards the moving tag is moved, see below. |
+| **Move Tag** | Creates a tag or moves an existing one to the current branch head. The name is asked for, prefilled per `moving_tag`. |
 
 ### When a commit is refused
 
 "… changed on GitHub since your last sync" means somebody (or an action) committed to the file after you last downloaded it. The commit dialog then marks those files with "← changed on GitHub" and offers three ways out: *Commit* overwrites the GitHub version with yours (the other change is still in the history on GitHub, nothing is lost for good); *Open on GitHub* shows the compare page from your last sync to the current branch head, so you can see what changed, and cancels; *Cancel*. This dialog appears even with `confirm_commit` off. After a look at the changes, either Download (your local change is kept if it does not conflict, otherwise you are asked) and commit again, or copy your change into the downloaded version.
+
+### Moving tags
+
+A release tag (`v1.2.3`) never moves. A *moving tag* is a second tag such as `v1` or `v1.2` that is re-pointed to every new release of that line; whoever references it always gets the latest compatible version without changing anything. You need one mainly when you publish a **GitHub Action**, which users reference exactly this way (`uses: owner/action@v1`); a few projects also offer a `latest` tag in the same spirit. Package Control and most other package managers read the version tags themselves, so for a Sublime package or an ordinary repository set `moving_tag` to `""` and forget about it. Create Release can move such a tag for you, controlled by the `moving_tag` setting: `"ask"` offers the major tag (`v1`), the minor tag (`v1.2`) or none after each release; `"major"` or `"minor"` move that tag without asking; any other text is a fixed tag name that follows every release; `""` never moves anything. Move Tag does the same by hand for the current branch head.
 
 ## Settings
 
@@ -68,6 +73,7 @@ All in Tools › GitHub Light and in the Command Palette as "GitHub Light: …".
 | `ask_commit_message` | `true` | Ask for the commit message; `false` uses the default ("Add x.md" / "Update x.md", or "Add 2 files, update 3 files"). |
 | `ask_release_details` | `true` | Ask for title and notes of a release; `false` takes the tag as title and no notes. |
 | `tag_prefix` | `"v"` | Prefix of version tags (`v1.2.3`). Set `""` for plain numbers. |
+| `moving_tag` | `"ask"` | After a release: `"ask"`, `"major"` (`v1`), `"minor"` (`v1.2`), `""` (never) or a fixed tag name. See *Moving tags*. |
 | `show_panel_on_output` | `true` | Open the output panel when the package reports something. |
 
 Every setting can be set in the project file under `"settings": {"github_light": {…}}`, which overrides the general settings.

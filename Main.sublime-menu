@@ -16,6 +16,7 @@
                     { "caption": "History Online", "command": "ghl_open_online", "args": {"kind": "history"} },
                     { "caption": "-" },
                     { "caption": "Create Release…", "command": "ghl_release" },
+                    { "caption": "Move Tag…", "command": "ghl_move_tag" },
                     { "caption": "-" },
                     {
                         "caption": "Settings",

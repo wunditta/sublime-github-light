@@ -25,6 +25,7 @@ DEFAULTS = {
     "ask_commit_message": True,
     "ask_release_details": True,
     "tag_prefix": "v",
+    "moving_tag": "ask",
     "show_panel_on_output": True,
 }
 
@@ -237,6 +238,24 @@ class Api(object):
     def tags(self):
         return [t["name"] for t in self.call("GET", self.r("/tags?per_page=100"))]
 
+    def tag_target(self, name):
+        """sha the tag points to, or None if the tag does not exist"""
+        try:
+            return self.call("GET", self.r("/git/ref/tags/" + urllib.parse.quote(name, safe="")))["object"]["sha"]
+        except ApiError as e:
+            if e.status == 404:
+                return None
+            raise
+
+    def move_tag(self, name, sha):
+        """create the tag or move it to sha; returns the previous sha (None if new)"""
+        old = self.tag_target(name)
+        if old is None:
+            self.call("POST", self.r("/git/refs"), {"ref": "refs/tags/" + name, "sha": sha})
+        elif old != sha:
+            self.call("PATCH", self.r("/git/refs/tags/" + urllib.parse.quote(name, safe="")), {"sha": sha, "force": True})
+        return old
+
     def release(self, tag, name, body):
         return self.call("POST", self.r("/releases"),
                          {"tag_name": tag, "target_commitish": self.branch, "name": name, "body": body or ""})
@@ -288,6 +307,28 @@ def describe(count, what):
 
 
 DIALOG_LINES = 12
+
+
+def latest_version(api, prefix):
+    """(major, minor, patch) of the highest version tag, or None"""
+    versions = []
+    for t in api.tags():
+        m = re.fullmatch(re.escape(prefix) + r"(\d+)\.(\d+)\.(\d+)", t)
+        if m:
+            versions.append(tuple(int(x) for x in m.groups()))
+    return max(versions) if versions else None
+
+
+def moving_tag_name(window, prefix, version, mode=None):
+    """the moving tag for a version per the moving_tag setting: "major" -> v1, "minor" -> v1.2, other text -> that name, "" -> None"""
+    mode = setting(window, "moving_tag") if mode is None else mode
+    if not mode or mode == "ask":
+        return None
+    if mode == "major":
+        return "%s%d" % (prefix, version[0])
+    if mode == "minor":
+        return "%s%d.%d" % (prefix, version[0], version[1])
+    return mode
 
 
 def default_message(changed):
@@ -604,17 +645,12 @@ class GhlReleaseCommand(sublime_plugin.WindowCommand):
         run_async(lambda: self.work(api))
 
     def work(self, api):
+        prefix = setting(self.window, "tag_prefix") or ""
         try:
-            tags = api.tags()
+            current = latest_version(api, prefix)
         except ApiError as e:
             return error(str(e))
-        prefix = setting(self.window, "tag_prefix") or ""
-        versions = []
-        for t in tags:
-            m = re.fullmatch(re.escape(prefix) + r"(\d+)\.(\d+)\.(\d+)", t)
-            if m:
-                versions.append(tuple(int(x) for x in m.groups()))
-        ui(self.choose, api, prefix, max(versions) if versions else None)
+        ui(self.choose, api, prefix, current)
 
     def choose(self, api, prefix, current):
         if current is None:
@@ -630,19 +666,80 @@ class GhlReleaseCommand(sublime_plugin.WindowCommand):
             if i < 0:
                 return
             tag = items[i][0]
+            version = tuple(int(x) for x in options[i][0].split("."))
             if not setting(self.window, "ask_release_details"):
-                return run_async(lambda: self.create(api, tag, tag, ""))
-            sublime.set_timeout(lambda: self.window.show_input_panel("Release title:", tag, lambda title: self.body(api, tag, title), None, None), 150)
+                return run_async(lambda: self.create(api, prefix, version, tag, tag, ""))
+            sublime.set_timeout(lambda: self.window.show_input_panel(
+                "Release title:", tag, lambda title: self.body(api, prefix, version, tag, title), None, None), 150)
         self.window.show_quick_panel(items, picked)
 
-    def body(self, api, tag, title):
+    def body(self, api, prefix, version, tag, title):
         self.window.show_input_panel("Release notes (optional):", "",
-                                     lambda notes: run_async(lambda: self.create(api, tag, title, notes)), None, None)
+                                     lambda notes: run_async(lambda: self.create(api, prefix, version, tag, title, notes)), None, None)
 
-    def create(self, api, tag, title, notes):
+    def create(self, api, prefix, version, tag, title, notes):
         try:
             rel = api.release(tag, title.strip() or tag, notes.strip())
+            sha = api.head()
         except ApiError as e:
             return error(str(e))
         log(self.window, "Release %s created: %s" % (tag, rel.get("html_url", "")))
         ui(sublime.status_message, "GitHub Light: release %s created" % tag)
+        mode = setting(self.window, "moving_tag")
+        if mode == "ask":
+            ui(self.ask_moving, api, prefix, version, sha)
+        else:
+            name = moving_tag_name(self.window, prefix, version, mode)
+            if name:
+                run_async(lambda: move_tag(self.window, api, name, sha))
+
+    def ask_moving(self, api, prefix, version, sha):
+        items = [["Move %s" % moving_tag_name(None, prefix, version, "major"), "The moving tag of the major version follows this release"],
+                 ["Move %s" % moving_tag_name(None, prefix, version, "minor"), "The moving tag of the minor version follows this release"],
+                 ["No moving tag", "Leave the tags as they are"]]
+
+        def picked(i):
+            if i in (0, 1):
+                name = items[i][0][5:]
+                run_async(lambda: move_tag(self.window, api, name, sha))
+        sublime.set_timeout(lambda: self.window.show_quick_panel(items, picked), 150)
+
+
+def move_tag(window, api, name, sha):
+    try:
+        old = api.move_tag(name, sha)
+    except ApiError as e:
+        return error(str(e))
+    if old is None:
+        log(window, "Tag %s created at %s" % (name, sha[:7]))
+    elif old == sha:
+        log(window, "Tag %s already points to %s" % (name, sha[:7]))
+    else:
+        log(window, "Tag %s moved from %s to %s" % (name, old[:7], sha[:7]))
+    ui(sublime.status_message, "GitHub Light: tag %s -> %s" % (name, sha[:7]))
+
+
+class GhlMoveTagCommand(sublime_plugin.WindowCommand):
+    """Create or move a tag (such as v1) to the branch head; the name follows the moving_tag setting, or is asked for."""
+
+    def run(self):
+        p = prepare(self.window)
+        if not p:
+            return
+        api, folder = p
+        run_async(lambda: self.work(api))
+
+    def work(self, api):
+        prefix = setting(self.window, "tag_prefix") or ""
+        try:
+            current = latest_version(api, prefix)
+            sha = api.head()
+        except ApiError as e:
+            return error(str(e))
+        mode = setting(self.window, "moving_tag")
+        name = moving_tag_name(self.window, prefix, current, mode if mode not in ("ask", "") else "major") if current else prefix + "1"
+        ui(self.ask, api, name, sha)
+
+    def ask(self, api, name, sha):
+        self.window.show_input_panel("Tag to create or move to %s:" % sha[:7], name,
+                                     lambda n: run_async(lambda: move_tag(self.window, api, n.strip(), sha)) if n.strip() else None, None, None)
