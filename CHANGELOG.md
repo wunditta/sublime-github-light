@@ -6,7 +6,7 @@ Format: [Keep a Changelog](https://keepachangelog.com), versions: [Semantic Vers
 
 ## [v1.0.0] - 2026-11-14
 
-### Firste Release
+### First Release
 - **Download**: the branch into the project folder
   - changes detected by git blob hashes, last sync in `.github-sync-hash.json`
   - local changes are never overwritten without asking
@@ -20,7 +20,9 @@ Format: [Keep a Changelog](https://keepachangelog.com), versions: [Semantic Vers
   - next patch / minor / major from the latest tag, `v1.0.0` if none
   - notes in an editor tab (Markdown, word wrap), Ctrl+Enter creates the release
   - `release_notes_from_changelog`: notes from the Unreleased section of `CHANGELOG.md`, section closed and committed first
+    - an empty section asks: release anyway (empty notes) or cancel
   - `sublime_version_files`: Package Control's `messages/<tag>.txt` with the same notes
+- `release_label`: latest / pre-release / none, or asked each time
 - **Move Tag** and `moving_tag`: a tag like `v1` that follows the releases (for GitHub Actions)
 - Right-click menus
   - text area: View / Blame / History on GitHub, Commit File to GitHub
