@@ -6,7 +6,7 @@ Change detection uses git's blob hash (sha1 of "blob <size>\\0" + content), comp
 with the branch tree; the hashes of the last sync live in <folder>/.github-sync-hash.json.
 """
 import sublime, sublime_plugin
-import os, re, json, base64, hashlib, fnmatch, threading, webbrowser, urllib.request, urllib.error, urllib.parse
+import os, re, json, base64, hashlib, fnmatch, threading, webbrowser, datetime, urllib.request, urllib.error, urllib.parse
 
 SETTINGS_FILE = "GitHub Light.sublime-settings"
 PROJECT_KEY = "github_light"
@@ -26,6 +26,8 @@ DEFAULTS = {
     "ask_release_details": True,
     "tag_prefix": "v",
     "moving_tag": "ask",
+    "release_notes_from_changelog": False,
+    "sublime_version_files_from_changelog": False,
     "show_panel_on_output": True,
 }
 
@@ -688,6 +690,75 @@ class GhlOpenOnlineCommand(sublime_plugin.WindowCommand):
         return True
 
 
+CHANGELOG = "CHANGELOG.md"
+UNRELEASED_RE = re.compile(r"^## \[?Unreleased\]?[ \t]*\n", re.M | re.I)
+NEXT_H2_RE = re.compile(r"^## ", re.M)
+
+
+def read_unreleased(folder):
+    """(section text without its heading, stripped) of CHANGELOG.md, or None when there is no file or no section"""
+    path = os.path.join(folder, CHANGELOG)
+    if not os.path.isfile(path):
+        return None
+    text = open(path, "r", encoding="utf-8").read()
+    m = UNRELEASED_RE.search(text)
+    if not m:
+        return None
+    rest = text[m.end():]
+    n = NEXT_H2_RE.search(rest)
+    return (rest[:n.start()] if n else rest).strip()
+
+
+def release_changelog(folder, tag):
+    """Rename the Unreleased section to the tag (v1.2.0, as the release is named) with today's date; new empty Unreleased on top."""
+    path = os.path.join(folder, CHANGELOG)
+    text = open(path, "r", encoding="utf-8").read()
+    m = UNRELEASED_RE.search(text)
+    today = datetime.date.today().isoformat()
+    new = text[:m.start()] + "## [Unreleased]\n\n## [%s] - %s\n" % (tag, today) + text[m.end():]
+    open(path, "w", encoding="utf-8").write(new)
+    return path
+
+
+def write_version_message(folder, version, tag, notes):
+    """messages/<tag>.txt with the notes and its entry in messages.json (Package Control shows it after an upgrade).
+    The json key must be the bare version: Package Control looks the note up by the version parsed from the tag."""
+    mdir = os.path.join(folder, "messages")
+    os.makedirs(mdir, exist_ok=True)
+    txt = os.path.join(mdir, tag + ".txt")
+    open(txt, "w", encoding="utf-8").write("%s\n\n%s\n" % (tag, notes))
+    mjson = os.path.join(folder, "messages.json")
+    data = {}
+    if os.path.isfile(mjson):
+        try:
+            data = json.loads(open(mjson, "r", encoding="utf-8").read())
+        except ValueError:
+            data = {}
+    data[version] = "messages/%s.txt" % tag
+    open(mjson, "w", encoding="utf-8").write(json.dumps(data, indent=4) + "\n")
+    return [txt, mjson]
+
+
+def commit_files(window, api, folder, paths, message):
+    """Commit the given local files as they are (no conflict check - they were just written); returns the new head."""
+    state = load_state(folder)
+    head = api.head()
+    _, base_tree = api.tree(head)
+    entries = []
+    for lp in paths:
+        with open(lp, "rb") as f:
+            data = f.read()
+        remote = to_remote(window, os.path.relpath(lp, folder))
+        entries.append((remote, api.create_blob(data), blob_hash(data)))
+    new = api.commit(head, base_tree, [(r, sha) for r, sha, _ in entries], message)
+    for r, _, h in entries:
+        state["files"][r] = h
+    state["head"] = new
+    save_state(folder, state)
+    log(window, "Commit to %s@%s: %s\n%s\n  Committed as %s" % (api.repo, api.branch, message, "\n".join("  - %s: OK" % r for r, _, _ in entries), new[:7]))
+    return new
+
+
 class GhlReleaseCommand(sublime_plugin.WindowCommand):
     """Create a tag and a release on the branch head; the next version is chosen as patch, minor or major."""
 
@@ -696,6 +767,15 @@ class GhlReleaseCommand(sublime_plugin.WindowCommand):
         if not p:
             return
         api, folder = p
+        self.folder = folder
+        self.notes = None
+        if setting(self.window, "release_notes_from_changelog"):
+            self.notes = read_unreleased(folder)
+            if self.notes is None:
+                return error("No \"Unreleased\" section found in %s (expected a heading \"## [Unreleased]\")" % os.path.join(folder, CHANGELOG))
+            if not self.notes:
+                return error("The \"Unreleased\" section of %s is empty - nothing to release" % CHANGELOG)
+            log(self.window, "Release notes from %s:\n%s" % (CHANGELOG, "\n".join("  " + l for l in self.notes.splitlines())))
         run_async(lambda: self.work(api))
 
     def work(self, api):
@@ -722,21 +802,32 @@ class GhlReleaseCommand(sublime_plugin.WindowCommand):
             tag = items[i][0]
             version = tuple(int(x) for x in options[i][0].split("."))
             if not setting(self.window, "ask_release_details"):
-                return run_async(lambda: self.create(api, prefix, version, tag, tag, ""))
+                return run_async(lambda: self.create(api, prefix, version, tag, tag, self.notes or ""))
             sublime.set_timeout(lambda: self.window.show_input_panel(
                 "Release title:", tag, lambda title: self.body(api, prefix, version, tag, title), None, None), 150)
         self.window.show_quick_panel(items, picked)
 
     def body(self, api, prefix, version, tag, title):
+        if self.notes is not None:                       # the changelog section is the notes; nothing to type
+            return run_async(lambda: self.create(api, prefix, version, tag, title, self.notes))
         self.window.show_input_panel("Release notes (optional):", "",
                                      lambda notes: run_async(lambda: self.create(api, prefix, version, tag, title, notes)), None, None)
 
     def create(self, api, prefix, version, tag, title, notes):
+        vstr = "%d.%d.%d" % version
         try:
+            if self.notes is not None:
+                # the changelog (and the Package Control message files) must be in the release: commit them first
+                paths = [release_changelog(self.folder, tag)]
+                if setting(self.window, "sublime_version_files_from_changelog"):
+                    paths += write_version_message(self.folder, vstr, tag, self.notes)
+                commit_files(self.window, api, self.folder, paths, "Release %s" % tag)
             rel = api.release(tag, title.strip() or tag, notes.strip())
             sha = api.head()
         except ApiError as e:
             return error(str(e))
+        except OSError as e:
+            return error("Could not write the release files: %s" % e)
         log(self.window, "Release %s created: %s" % (tag, rel.get("html_url", "")))
         ui(sublime.status_message, "GitHub Light: release %s created" % tag)
         mode = setting(self.window, "moving_tag")

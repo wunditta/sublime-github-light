@@ -46,6 +46,16 @@
     //   any other text: a fixed tag name that is moved to every release (e.g. "latest")
     "moving_tag": "",
 
+    // Create Release takes the release notes from the "Unreleased" section of CHANGELOG.md in the folder (Keep a Changelog
+    // format: "## [Unreleased]", "## [v1.2.3] - 2026-01-31" - the heading carries the tag name). The section is renamed to the new version with today's date,
+    // a new empty Unreleased section is added, and the file is committed before the release is created. The notes are
+    // then not asked for (ask_release_details only asks the title). An empty Unreleased section stops the release.
+    "release_notes_from_changelog": false,
+
+    // With release_notes_from_changelog: also write messages/<tag>.txt with the same notes and its entry in
+    // messages.json - the note Package Control shows to users of a Sublime Text package after the upgrade.
+    "sublime_version_files_from_changelog": false,
+
     // Show the output panel when GitHub Light reports something.
     "show_panel_on_output": true,
 }
