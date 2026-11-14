@@ -10,9 +10,9 @@
     // The branch.
     "branch": "main",
 
-    // Local folder holding the working copy of the repository. A relative path is taken from the folder holding
-    // the project file (without a project file: from the first folder in the side bar).
-    "folder": "github",
+    // Local folder holding the working copy of the repository. Empty = the first folder of the project (the top one in
+    // the side bar). A relative path is taken from the folder holding the project file.
+    "folder": "",
 
     // Local folder names that stand for a differently named folder on GitHub (first path segment only).
     // Default: the local folder "dot-github" is committed as ".github" and ".github" is downloaded into "dot-github".

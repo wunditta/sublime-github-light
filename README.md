@@ -26,14 +26,12 @@ Commits are made directly on the branch with the Git Data API (blobs → tree �
        "folders": [ { "path": "." } ],
        "settings": {
            "github_light": {
-               "repository": "owner/name",
-               "branch": "main",
-               "folder": "github"
+               "repository": "owner/name"
            }
        }
    }
    ```
-   `folder` is the local working copy, relative to the project file. It may be empty; the first Download fills it.
+   The first folder of the project is the working copy (set `folder` for another one, relative to the project file). It may be empty; the first Download fills it.
 4. Tools › GitHub Light › **Download**.
 
 ## Commands
@@ -69,7 +67,7 @@ Keeping a `CHANGELOG.md` in the [Keep a Changelog](https://keepachangelog.com) f
 |---|---|---|
 | `repository` | `""` | `owner/name`. Per project. |
 | `branch` | `"main"` | The branch. |
-| `folder` | `"github"` | Local working copy, relative to the project file (or to the first folder in the side bar when there is no project file). |
+| `folder` | `""` | Local working copy. Empty: the first folder of the project (top of the side bar). A relative path is taken from the project file's folder. |
 | `folder_map` | `{"dot-github": ".github"}` | Local folder names that stand for another name on GitHub (first path segment). The default lets you keep `.github` as `dot-github` locally, where tools that hide dot-folders can see it. |
 | `ignore` | state file, `*.sublime-workspace`, `*.sublime-project`, `.DS_Store`, `Thumbs.db` | Glob patterns never synced. |
 | `token` | `""` | The fine-grained personal access token. User settings only. |

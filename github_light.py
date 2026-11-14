@@ -17,7 +17,7 @@ PANEL = "github_light"
 DEFAULTS = {
     "repository": "",
     "branch": "main",
-    "folder": "github",
+    "folder": "",
     "folder_map": {"dot-github": ".github"},
     "ignore": [STATE_FILE, "*.sublime-workspace", "*.sublime-project", ".DS_Store", "Thumbs.db"],
     "token": "",
@@ -48,8 +48,12 @@ def setting(window, key):
 
 
 def sync_folder(window):
-    """The local working copy: 'folder' relative to the project file (or to the first sidebar folder)."""
-    f = setting(window, "folder") or "github"
+    """The local working copy: 'folder' relative to the project file; empty = the first folder in the side bar."""
+    f = setting(window, "folder") or ""
+    if not f:
+        if window is not None and window.folders():
+            return os.path.normpath(window.folders()[0])
+        return None
     f = os.path.expandvars(os.path.expanduser(f))
     if not os.path.isabs(f):
         base = None
