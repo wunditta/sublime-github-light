@@ -65,7 +65,7 @@ All in Tools › GitHub Light and in the Command Palette as "GitHub Light: …".
 | `ignore` | state file, `*.sublime-workspace`, `*.sublime-project`, `.DS_Store`, `Thumbs.db` | Glob patterns never synced. |
 | `token` | `""` | The fine-grained personal access token. User settings only. |
 | `confirm_commit` | `true` | Show the file list and ask before committing. |
-| `ask_commit_message` | `true` | Ask for the commit message; `false` uses the default (the file name, or "Update N files"). |
+| `ask_commit_message` | `true` | Ask for the commit message; `false` uses the default ("Add x.md" / "Update x.md", or "Add 2 files, update 3 files"). |
 | `ask_release_details` | `true` | Ask for title and notes of a release; `false` takes the tag as title and no notes. |
 | `tag_prefix` | `"v"` | Prefix of version tags (`v1.2.3`). Set `""` for plain numbers. |
 | `show_panel_on_output` | `true` | Open the output panel when the package reports something. |

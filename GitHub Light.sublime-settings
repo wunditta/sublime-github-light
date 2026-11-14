@@ -28,7 +28,7 @@
     // Show the list of files and ask before a commit.
     "confirm_commit": true,
 
-    // Ask for the commit message. false: the default message is used (the file name, or "Update N files").
+    // Ask for the commit message. false: the default message is used ("Add x.md", "Update x.md", "Add 2 files, update 3 files").
     "ask_commit_message": true,
 
     // Ask for title and notes when creating a release. false: the title is the tag, the notes stay empty.

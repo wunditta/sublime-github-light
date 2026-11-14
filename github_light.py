@@ -289,6 +289,21 @@ def describe(count, what):
 
 DIALOG_LINES = 12
 
+
+def default_message(changed):
+    """GitHub's own wording: "Add x.md" / "Update x.md" / "Add 2 files, update 3 files" """
+    added = [p for p, _, _, new in changed if new]
+    updated = [p for p, _, _, new in changed if not new]
+    if len(changed) == 1:
+        return ("Add " if added else "Update ") + changed[0][0]
+    parts = []
+    if added:
+        parts.append("add " + describe(len(added), "file"))
+    if updated:
+        parts.append("update " + describe(len(updated), "file"))
+    text = ", ".join(parts)
+    return text[0].upper() + text[1:]
+
 def short_list(names):
     """the first few names for a dialog (message boxes have no scrollbar); the full list goes to the output panel"""
     if len(names) <= DIALOG_LINES:
@@ -434,12 +449,12 @@ class GhlCommitCommand(sublime_plugin.WindowCommand):
                 continue
             if path in stored:
                 if rh != stored[path]:
-                    conflicts.append((path, lp, lh))         # GitHub moved on since the last sync
+                    conflicts.append((path, lp, lh, False))  # GitHub moved on since the last sync
                     continue
             elif rh is not None:
-                conflicts.append((path, lp, lh))             # never synced, but exists on GitHub with other content
+                conflicts.append((path, lp, lh, False))      # never synced, but exists on GitHub with other content
                 continue
-            changed.append((path, lp, lh))
+            changed.append((path, lp, lh, rh is None))       # new on GitHub when it has no blob there
         save_state(folder, state)
         ui(self.decide, api, folder, head, base_tree, state, changed, conflicts)
 
@@ -448,7 +463,7 @@ class GhlCommitCommand(sublime_plugin.WindowCommand):
         if not changed and not conflicts:
             log(w, "Commit: nothing changed")
             return sublime.status_message("GitHub Light: nothing to commit")
-        names = [p + "   \u2190 changed on GitHub" for p, _, _ in conflicts] + [p for p, _, _ in changed]
+        names = [p + "   \u2190 changed on GitHub" for p, _, _, _ in conflicts] + [p + ("   (new)" if new else "") for p, _, _, new in changed]
         listing = short_list(names)
         total = len(changed) + len(conflicts)
         log(w, "Commit: %s to %s@%s%s\n%s" % (describe(total, "file"), api.repo, api.branch,
@@ -461,14 +476,13 @@ class GhlCommitCommand(sublime_plugin.WindowCommand):
             if r == sublime.DIALOG_NO:
                 webbrowser.open(compare_url(api, state))
             if r != sublime.DIALOG_YES:
-                return log(w, "Commit cancelled: changed on GitHub: " + ", ".join(p for p, _, _ in conflicts))
-            log(w, "Commit: overwriting the GitHub version of " + ", ".join(p for p, _, _ in conflicts))
+                return log(w, "Commit cancelled: changed on GitHub: " + ", ".join(p for p, _, _, _ in conflicts))
+            log(w, "Commit: overwriting the GitHub version of " + ", ".join(p for p, _, _, _ in conflicts))
             changed = changed + conflicts
         elif setting(w, "confirm_commit"):
             if not sublime.ok_cancel_dialog("%s changed since your last commit to %s@%s. Commit now?\n\n%s" % (describe(total, "file"), api.repo, api.branch, listing), "Commit"):
                 return log(w, "Commit cancelled")
-        plain = [p for p, _, _ in changed]
-        default = plain[0] if len(plain) == 1 else "Update %s" % describe(len(plain), "file")
+        default = default_message(changed)
         if not setting(w, "ask_commit_message"):
             return run_async(lambda: self.push(api, folder, head, base_tree, state, changed, default))
         # a moment later: an input panel opened in the same tick as a closing dialog loses focus at once (= cancel)
@@ -481,7 +495,7 @@ class GhlCommitCommand(sublime_plugin.WindowCommand):
         w = self.window
         entries, lines = [], []
         log(w, "Commit to %s@%s: %s" % (api.repo, api.branch, message))
-        for path, lp, lh in changed:
+        for path, lp, lh, _ in changed:
             try:
                 with open(lp, "rb") as f:
                     data = f.read()
@@ -498,7 +512,7 @@ class GhlCommitCommand(sublime_plugin.WindowCommand):
         except ApiError as e:
             log(w, "  Error %s\nCommit aborted, nothing was committed." % e)
             return error(str(e))
-        for path, _, lh in changed:
+        for path, _, lh, _ in changed:
             state["files"][path] = lh
         state["head"] = new
         save_state(folder, state)
