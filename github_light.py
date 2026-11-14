@@ -287,6 +287,15 @@ def describe(count, what):
     return "%d %s%s" % (count, what, "" if count == 1 else "s")
 
 
+DIALOG_LINES = 12
+
+def short_list(names):
+    """the first few names for a dialog (message boxes have no scrollbar); the full list goes to the output panel"""
+    if len(names) <= DIALOG_LINES:
+        return "\n".join(names)
+    return "\n".join(names[:DIALOG_LINES]) + "\n... and %d more (see the output panel)" % (len(names) - DIALOG_LINES)
+
+
 # ---------------------------------------------------------------- commands
 
 class GhlDownloadCommand(sublime_plugin.WindowCommand):
@@ -336,8 +345,10 @@ class GhlDownloadCommand(sublime_plugin.WindowCommand):
     def decide(self, api, folder, head, remote, state, todo, conflicts, gone):
         overwrite = []
         if conflicts:
+            log(self.window, "Download: %s changed locally and differ from GitHub:\n%s"
+                % (describe(len(conflicts), "file"), "\n".join("  " + p for p in conflicts)))
             msg = ("%s changed locally and differ from GitHub:\n\n%s\n\nOverwrite the local files with the GitHub version?"
-                   % (describe(len(conflicts), "file"), "\n".join(conflicts[:30]) + ("\n..." if len(conflicts) > 30 else "")))
+                   % (describe(len(conflicts), "file"), short_list(conflicts)))
             r = sublime.yes_no_cancel_dialog(msg, "Overwrite", "Skip them")
             if r == sublime.DIALOG_CANCEL:
                 return log(self.window, "Download cancelled")
@@ -437,9 +448,12 @@ class GhlCommitCommand(sublime_plugin.WindowCommand):
         if not changed and not conflicts:
             log(w, "Commit: nothing changed")
             return sublime.status_message("GitHub Light: nothing to commit")
-        names = [p for p, _, _ in changed] + [p + "   \u2190 changed on GitHub" for p, _, _ in conflicts]
-        listing = "\n".join(names[:40]) + ("\n..." if len(names) > 40 else "")
+        names = [p + "   \u2190 changed on GitHub" for p, _, _ in conflicts] + [p for p, _, _ in changed]
+        listing = short_list(names)
         total = len(changed) + len(conflicts)
+        log(w, "Commit: %s to %s@%s%s\n%s" % (describe(total, "file"), api.repo, api.branch,
+            " (%s changed on GitHub since the last sync)" % describe(len(conflicts), "file") if conflicts else "",
+            "\n".join("  " + n for n in names)))
         if conflicts:
             msg = ("Commit %s to %s@%s?\n\n%s\n\n%s changed on GitHub since your last sync; committing overwrites "
                    "the GitHub version with yours." % (describe(total, "file"), api.repo, api.branch, listing, describe(len(conflicts), "file")))
@@ -451,7 +465,7 @@ class GhlCommitCommand(sublime_plugin.WindowCommand):
             log(w, "Commit: overwriting the GitHub version of " + ", ".join(p for p, _, _ in conflicts))
             changed = changed + conflicts
         elif setting(w, "confirm_commit"):
-            if not sublime.ok_cancel_dialog("Commit %s to %s@%s?\n\n%s" % (describe(total, "file"), api.repo, api.branch, listing), "Commit"):
+            if not sublime.ok_cancel_dialog("%s changed since your last commit to %s@%s. Commit now?\n\n%s" % (describe(total, "file"), api.repo, api.branch, listing), "Commit"):
                 return log(w, "Commit cancelled")
         plain = [p for p, _, _ in changed]
         default = plain[0] if len(plain) == 1 else "Update %s" % describe(len(plain), "file")
@@ -477,7 +491,7 @@ class GhlCommitCommand(sublime_plugin.WindowCommand):
             except (ApiError, OSError) as e:
                 log(w, "  %s: Error %s\nCommit aborted, nothing was committed." % (path, e))
                 return error("%s could not be uploaded: %s" % (path, e))
-            log(w, "  %s: OK" % path)
+            log(w, "  - %s: OK" % path)
             entries.append((path, sha))
         try:
             new = api.commit(head, base_tree, entries, message)
