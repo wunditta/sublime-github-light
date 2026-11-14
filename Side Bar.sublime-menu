@@ -2,5 +2,5 @@
     { "caption": "-", "id": "github-light-side-bar" },
     { "command": "ghl_commit", "args": {"files": []} },
     { "command": "ghl_commit", "args": {"dirs": []} },
-    { "caption": "History Online", "command": "ghl_open_online", "args": {"kind": "history", "files": []} }
+    { "caption": "History on GitHub", "command": "ghl_open_online", "args": {"kind": "history", "files": []} }
 ]

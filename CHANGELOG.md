@@ -11,5 +11,5 @@ First release.
 - **View / Blame / History Online** for the current file, at the cursor line.
 - **Create Release**: next patch / minor / major version from the latest tag (`v1.0.0` if none), title and notes; optionally the notes come from `CHANGELOG.md`'s Unreleased section, which is closed under the new tag and committed first (`release_notes_from_changelog`), plus Package Control's `messages/<tag>.txt` (`sublime_version_files_from_changelog`).
 - **Move Tag** and the `moving_tag` setting ("ask" / "major" / "minor" / fixed name / ""): a tag like `v1` that follows the releases (for GitHub Actions); the report names the version tags of old and new target.
-- Right-click menus: text area (View / Blame / History Online, Commit This File) and side bar (Commit This File / Folder / All, History Online), shown only inside the sync folder; menu-bar entries are greyed out while the active file is outside it.
+- Right-click menus: text area (View / Blame / History on GitHub, Commit File to GitHub) and side bar (Commit File / Folder to GitHub, History on GitHub), shown only inside the sync folder; menu-bar entries are greyed out while the active file is outside it.
 - Settings: `repository`, `branch`, `folder`, `folder_map` (`dot-github` → `.github`), `ignore`, `token`, `confirm_commit`, `ask_commit_message`, `ask_release_details`, `tag_prefix`.

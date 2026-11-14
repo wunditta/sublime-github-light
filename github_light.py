@@ -510,12 +510,13 @@ class GhlCommitCommand(sublime_plugin.WindowCommand):
         return True
 
     def description(self, scope="all", files=None, dirs=None, context=False):
+        # right-click menus say where the commit goes; the menu bar entries sit in the GitHub Light submenu already
         if files is not None:
-            return "Commit This File\u2026" if len(files) <= 1 else "Commit These Files\u2026"
+            return "Commit File to GitHub\u2026" if len(files) <= 1 else "Commit Files to GitHub\u2026"
         if dirs is not None:
-            folder = sync_folder(self.window)
-            same = dirs and folder and os.path.normcase(os.path.normpath(dirs[0])) == os.path.normcase(folder)
-            return "Commit All\u2026" if same else "Commit Folder\u2026"
+            return "Commit Folder to GitHub\u2026"
+        if context:
+            return "Commit File to GitHub\u2026"
         return "Commit Current File\u2026" if scope == "current" else "Commit All\u2026"
 
     def work(self, api, folder, candidates):
