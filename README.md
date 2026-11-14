@@ -59,7 +59,7 @@ A release tag (`v1.2.3`) never moves. A *moving tag* is a second tag such as `v1
 
 ### Release notes from the changelog
 
-Keeping a `CHANGELOG.md` in the [Keep a Changelog](https://keepachangelog.com) form solves the "which version will this be?" problem: changes are written under `## [Unreleased]` as they happen, and the version is decided when releasing — from what the section holds. With `release_notes_from_changelog: true` Create Release does the mechanical part: it shows the Unreleased section in the output panel, lets you choose the version, renames the section to `## [v1.2.0] - <today>` (the tag name) with a fresh empty `## [Unreleased]` above, commits the file ("Release v1.2.0") and creates the release with the section as its notes, so the changelog, the release page and (with `sublime_version_files_from_changelog`) Package Control's `messages/v1.2.0.txt` carry the same text (its key in `messages.json` is the bare `1.2.0`, as Package Control requires). The notes are not asked for in this mode; `ask_release_details` then only asks the title. An empty Unreleased section stops the release.
+Keeping a `CHANGELOG.md` in the [Keep a Changelog](https://keepachangelog.com) form solves the "which version will this be?" problem: changes are written under `## [Unreleased]` as they happen, and the version is decided when releasing — from what the section holds. With `release_notes_from_changelog: true` Create Release does the mechanical part: it shows the Unreleased section in the output panel, lets you choose the version, renames the section to `## [v1.2.0] - <today>` (the tag name) with a fresh empty `## [Unreleased]` above, commits the file ("Release v1.2.0") and creates the release with the section as its notes, so the changelog, the release page and (with `sublime_version_files`) Package Control's `messages/v1.2.0.txt` carry the same text (its key in `messages.json` is the bare `1.2.0`, as Package Control requires). With `ask_release_details` the section is the suggested text in the notes panel (Enter confirms, Shift+Enter adds a line), and what you confirm is written to all three places. An empty Unreleased section stops the release.
 
 ## Settings
 
@@ -77,7 +77,7 @@ Keeping a `CHANGELOG.md` in the [Keep a Changelog](https://keepachangelog.com) f
 | `tag_prefix` | `"v"` | Prefix of version tags (`v1.2.3`). Set `""` for plain numbers. |
 | `moving_tag` | `"ask"` | After a release: `"ask"`, `"major"` (`v1`), `"minor"` (`v1.2`), `""` (never) or a fixed tag name. See *Moving tags*. |
 | `release_notes_from_changelog` | `false` | Take the release notes from the Unreleased section of `CHANGELOG.md` and close that section. See *Release notes from the changelog*. |
-| `sublime_version_files_from_changelog` | `false` | With the previous setting: also write `messages/<tag>.txt` and its entry in `messages.json` (Package Control's upgrade notes). |
+| `sublime_version_files` | `false` | For Sublime Text packages: write `messages/<tag>.txt` (Package Control's upgrade note) with the same release notes, plus its entry in `messages.json`; committed before the release. |
 | `show_panel_on_output` | `true` | Open the output panel when the package reports something. |
 
 Every setting can be set in the project file under `"settings": {"github_light": {…}}`, which overrides the general settings.

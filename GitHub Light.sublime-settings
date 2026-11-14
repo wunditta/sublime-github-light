@@ -31,7 +31,8 @@
     // Ask for the commit message. false: the default message is used ("Add x.md", "Update x.md", "Add 2 files, update 3 files").
     "ask_commit_message": true,
 
-    // Ask for title and notes when creating a release. false: the title is the tag, the notes stay empty.
+    // Ask for title and notes when creating a release. False: the tag is used as title, the notes stay empty.
+    // Note: Enter confirms, Shift+Enter adds a line
     "ask_release_details": true,
 
     // Prefix of the version tags Create Release makes and reads ("v" -> v1.2.3, "" -> 1.2.3).
@@ -46,15 +47,14 @@
     //   any other text: a fixed tag name that is moved to every release (e.g. "latest")
     "moving_tag": "",
 
-    // Create Release takes the release notes from the "Unreleased" section of CHANGELOG.md in the folder (Keep a Changelog
-    // format: "## [Unreleased]", "## [v1.2.3] - 2026-01-31" - the heading carries the tag name). The section is renamed to the new version with today's date,
-    // a new empty Unreleased section is added, and the file is committed before the release is created. The notes are
-    // then not asked for (ask_release_details only asks the title). An empty Unreleased section stops the release.
+    // "Create Release" takes the release notes from the "Unreleased" section of CHANGELOG.md in the folder with format:
+    // "## [Unreleased]". This section is renamed to the new version with today's date, and a new empty Unreleased section
+    // is added. An empty Unreleased section stops the release.
     "release_notes_from_changelog": false,
 
-    // With release_notes_from_changelog: also write messages/<tag>.txt with the same notes and its entry in
-    // messages.json - the note Package Control shows to users of a Sublime Text package after the upgrade.
-    "sublime_version_files_from_changelog": false,
+    // For Sublime Packages: True: works like "release_notes_from_changelog" but writes the text into messages/<tag>.txt with
+    // the TOC in messages.json. Sublime's Package Control shows this to users of a Sublime Text package after an upgrade.
+    "sublime_version_files": false,
 
     // Show the output panel when GitHub Light reports something.
     "show_panel_on_output": true,

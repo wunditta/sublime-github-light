@@ -27,7 +27,7 @@ DEFAULTS = {
     "tag_prefix": "v",
     "moving_tag": "ask",
     "release_notes_from_changelog": False,
-    "sublime_version_files_from_changelog": False,
+    "sublime_version_files": False,
     "show_panel_on_output": True,
 }
 
@@ -714,13 +714,18 @@ def read_unreleased(folder):
     return (rest[:n.start()] if n else rest).strip()
 
 
-def release_changelog(folder, tag):
-    """Rename the Unreleased section to the tag (v1.2.0, as the release is named) with today's date; new empty Unreleased on top."""
+def release_changelog(folder, tag, notes=None):
+    """Rename the Unreleased section to the tag (v1.2.0, as the release is named) with today's date; new empty Unreleased
+    on top. With notes, the section body is replaced by them (the text as confirmed in the release dialog)."""
     path = os.path.join(folder, CHANGELOG)
     text = open(path, "r", encoding="utf-8").read()
     m = UNRELEASED_RE.search(text)
     today = datetime.date.today().isoformat()
-    new = text[:m.start()] + "## [Unreleased]\n\n## [%s] - %s\n" % (tag, today) + text[m.end():]
+    rest = text[m.end():]
+    if notes is not None:
+        n = NEXT_H2_RE.search(rest)
+        rest = "\n" + notes.strip() + "\n\n" + (rest[n.start():] if n else "")
+    new = text[:m.start()] + "## [Unreleased]\n\n## [%s] - %s\n" % (tag, today) + rest
     open(path, "w", encoding="utf-8").write(new)
     return path
 
@@ -773,7 +778,7 @@ class GhlReleaseCommand(sublime_plugin.WindowCommand):
             return
         api, folder = p
         self.folder = folder
-        self.notes = None
+        self.notes = None                                # the Unreleased section (release_notes_from_changelog)
         if setting(self.window, "release_notes_from_changelog"):
             self.notes = read_unreleased(folder)
             if self.notes is None:
@@ -807,27 +812,36 @@ class GhlReleaseCommand(sublime_plugin.WindowCommand):
             tag = items[i][0]
             version = tuple(int(x) for x in options[i][0].split("."))
             if not setting(self.window, "ask_release_details"):
-                return run_async(lambda: self.create(api, prefix, version, tag, tag, self.notes or ""))
+                return run_async(lambda: self.create(api, prefix, version, tag, tag, None))
             sublime.set_timeout(lambda: self.window.show_input_panel(
                 "Release title:", tag, lambda title: self.body(api, prefix, version, tag, title), None, None), 150)
         self.window.show_quick_panel(items, picked)
 
     def body(self, api, prefix, version, tag, title):
-        if self.notes is not None:                       # the changelog section is the notes; nothing to type
-            return run_async(lambda: self.create(api, prefix, version, tag, title, self.notes))
-        self.window.show_input_panel("Release notes (optional):", "",
+        # the changelog section, when there is one, is the suggested text (Enter confirms, Shift+Enter adds a line)
+        self.window.show_input_panel("Release notes%s:" % ("" if self.notes is not None else " (optional)"), self.notes or "",
                                      lambda notes: run_async(lambda: self.create(api, prefix, version, tag, title, notes)), None, None)
 
-    def create(self, api, prefix, version, tag, title, notes):
+    def create(self, api, prefix, version, tag, title, entered):
+        """entered: the text of the notes panel, or None when the panel was not shown.
+        Release notes = the entered text, else the changelog section (release_notes_from_changelog), else empty;
+        sublime_version_files writes messages/<tag>.txt with the same notes."""
         vstr = "%d.%d.%d" % version
+        section = self.notes or ""
+        typed = entered.strip() if entered is not None else None
+        notes = typed if typed is not None else section
         try:
+            # the changelog and the Package Control message file must be in the release: commit them first
+            paths = []
             if self.notes is not None:
-                # the changelog (and the Package Control message files) must be in the release: commit them first
-                paths = [release_changelog(self.folder, tag)]
-                if setting(self.window, "sublime_version_files_from_changelog"):
-                    paths += write_version_message(self.folder, vstr, tag, self.notes)
+                if not notes:
+                    return error("Empty release notes - the release was not created")
+                paths.append(release_changelog(self.folder, tag, notes if notes != section else None))
+            if setting(self.window, "sublime_version_files"):
+                paths += write_version_message(self.folder, vstr, tag, notes)
+            if paths:
                 commit_files(self.window, api, self.folder, paths, "Release %s" % tag)
-            rel = api.release(tag, title.strip() or tag, notes.strip())
+            rel = api.release(tag, title.strip() or tag, notes)
             sha = api.head()
         except ApiError as e:
             return error(str(e))
