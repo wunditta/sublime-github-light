@@ -22,6 +22,8 @@ DEFAULTS = {
     "ignore": [STATE_FILE, "*.sublime-workspace", "*.sublime-project", ".DS_Store", "Thumbs.db"],
     "token": "",
     "confirm_commit": True,
+    "ask_commit_message": True,
+    "ask_release_details": True,
     "tag_prefix": "v",
     "show_panel_on_output": True,
 }
@@ -169,9 +171,9 @@ class Api(object):
         self.branch = (setting(window, "branch") or "main").strip()
         self.token = (setting(window, "token") or "").strip()
         if not self.repo or "/" not in self.repo:
-            raise ApiError(0, "no repository set - put \"repository\": \"owner/name\" into the project settings", "")
+            raise ApiError(0, "No repository set - put \"repository\": \"owner/name\" into the project settings", "")
         if not self.token:
-            raise ApiError(0, "no token - put \"token\": \"<fine-grained personal access token>\" into the User settings "
+            raise ApiError(0, "No token - put \"token\": \"<fine-grained personal access token>\" into the User settings "
                               "(Preferences > Package Settings > GitHub Light > Settings)", "")
 
     def call(self, method, path, body=None, raw=False):
@@ -197,7 +199,7 @@ class Api(object):
                 msg += " - check the token and its 'Contents: read and write' permission for this repository"
             raise ApiError(e.code, msg, url)
         except urllib.error.URLError as e:
-            raise ApiError(0, "network error: %s" % e.reason, url)
+            raise ApiError(0, "Network error: %s" % e.reason, url)
         if raw:
             return content
         return json.loads(content.decode("utf-8")) if content else {}
@@ -213,7 +215,7 @@ class Api(object):
         """{remote path: blob sha} of the whole branch, plus the tree sha"""
         t = self.call("GET", self.r("/git/trees/%s?recursive=1" % head))
         if t.get("truncated"):
-            raise ApiError(0, "the repository tree is too large for one request (GitHub truncated it)", "")
+            raise ApiError(0, "The repository tree is too large for one request (GitHub truncated it)", "")
         files = {e["path"]: e["sha"] for e in t.get("tree", []) if e.get("type") == "blob"}
         return files, t["sha"]
 
@@ -265,7 +267,7 @@ def prepare(window):
     """(api, folder) or None after an error message"""
     folder = sync_folder(window)
     if not folder:
-        error("no project folder - open a project or a folder first")
+        error("No project folder - open a project or a folder first")
         return None
     try:
         api = Api(window)
@@ -338,37 +340,42 @@ class GhlDownloadCommand(sublime_plugin.WindowCommand):
                    % (describe(len(conflicts), "file"), "\n".join(conflicts[:30]) + ("\n..." if len(conflicts) > 30 else "")))
             r = sublime.yes_no_cancel_dialog(msg, "Overwrite", "Skip them")
             if r == sublime.DIALOG_CANCEL:
-                return log(self.window, "download cancelled")
+                return log(self.window, "Download cancelled")
             if r == sublime.DIALOG_YES:
                 overwrite = conflicts
         run_async(lambda: self.write(api, folder, head, remote, state, todo + overwrite, [c for c in conflicts if c not in overwrite], gone))
 
     def write(self, api, folder, head, remote, state, todo, skipped, gone):
         w = self.window
-        written = 0
+        written, failed, lines = 0, 0, []
         for path in todo:
             try:
                 data = api.blob(remote[path])
-            except ApiError as e:
-                return error(str(e))
-            lp = os.path.join(folder, to_local(w, path).replace("/", os.sep))
-            os.makedirs(os.path.dirname(lp), exist_ok=True)
-            with open(lp, "wb") as f:
-                f.write(data)
+                lp = os.path.join(folder, to_local(w, path).replace("/", os.sep))
+                os.makedirs(os.path.dirname(lp), exist_ok=True)
+                with open(lp, "wb") as f:
+                    f.write(data)
+            except (ApiError, OSError) as e:
+                lines.append("  %s: Error %s" % (path, e))
+                failed += 1
+                continue
             state["files"][path] = remote[path]
+            lines.append("  %s: OK" % path)
             written += 1
         for path in gone:
             del state["files"][path]
-        state["head"] = head
+        if not failed:
+            state["head"] = head                             # the folder now matches this head (except skipped files)
         save_state(folder, state)
-        lines = ["download: %s written" % describe(written, "file")]
-        if todo:
-            lines += ["  " + p for p in todo]
+        head_line = "Download from %s@%s: %s written%s" % (api.repo, api.branch, describe(written, "file"),
+                                                             ", %s failed" % describe(failed, "file") if failed else "")
         if skipped:
-            lines.append("  skipped (changed locally): " + ", ".join(skipped))
+            lines.append("  Skipped (changed locally): " + ", ".join(skipped))
         if gone:
-            lines.append("  deleted on GitHub (local copies kept): " + ", ".join(gone))
-        log(w, "\n".join(lines))
+            lines.append("  Deleted on GitHub (local copies kept): " + ", ".join(gone))
+        log(w, "\n".join([head_line] + lines))
+        if failed:
+            error("%s could not be downloaded, see the output panel" % describe(failed, "file"))
         ui(sublime.status_message, "GitHub Light: %s downloaded" % describe(written, "file"))
 
 
@@ -385,7 +392,7 @@ class GhlCommitCommand(sublime_plugin.WindowCommand):
             v = self.window.active_view()
             fn = v.file_name() if v else None
             if not fn or not os.path.normpath(fn).startswith(folder + os.sep):
-                return error("the current file is not inside the sync folder \"%s\"" % folder)
+                return error("The current file is not inside the sync folder \"%s\"" % folder)
             if v.is_dirty():
                 if not sublime.ok_cancel_dialog("The file is not saved. Save and commit?", "Save and commit"):
                     return
@@ -428,7 +435,7 @@ class GhlCommitCommand(sublime_plugin.WindowCommand):
     def decide(self, api, folder, head, base_tree, state, changed, conflicts):
         w = self.window
         if not changed and not conflicts:
-            log(w, "commit: nothing changed")
+            log(w, "Commit: nothing changed")
             return sublime.status_message("GitHub Light: nothing to commit")
         names = [p for p, _, _ in changed] + [p + "   \u2190 changed on GitHub" for p, _, _ in conflicts]
         listing = "\n".join(names[:40]) + ("\n..." if len(names) > 40 else "")
@@ -440,39 +447,48 @@ class GhlCommitCommand(sublime_plugin.WindowCommand):
             if r == sublime.DIALOG_NO:
                 webbrowser.open(compare_url(api, state))
             if r != sublime.DIALOG_YES:
-                return log(w, "commit cancelled: changed on GitHub: " + ", ".join(p for p, _, _ in conflicts))
-            log(w, "commit: overwriting the GitHub version of " + ", ".join(p for p, _, _ in conflicts))
+                return log(w, "Commit cancelled: changed on GitHub: " + ", ".join(p for p, _, _ in conflicts))
+            log(w, "Commit: overwriting the GitHub version of " + ", ".join(p for p, _, _ in conflicts))
             changed = changed + conflicts
         elif setting(w, "confirm_commit"):
             if not sublime.ok_cancel_dialog("Commit %s to %s@%s?\n\n%s" % (describe(total, "file"), api.repo, api.branch, listing), "Commit"):
-                return log(w, "commit cancelled")
+                return log(w, "Commit cancelled")
         plain = [p for p, _, _ in changed]
         default = plain[0] if len(plain) == 1 else "Update %s" % describe(len(plain), "file")
+        if not setting(w, "ask_commit_message"):
+            return run_async(lambda: self.push(api, folder, head, base_tree, state, changed, default))
         # a moment later: an input panel opened in the same tick as a closing dialog loses focus at once (= cancel)
         sublime.set_timeout(lambda: w.show_input_panel(
             "Commit message:", default,
             lambda msg: run_async(lambda: self.push(api, folder, head, base_tree, state, changed, msg.strip() or default)),
-            None, lambda: log(w, "commit cancelled (no message)")), 150)
+            None, lambda: log(w, "Commit cancelled (no message)")), 150)
 
     def push(self, api, folder, head, base_tree, state, changed, message):
         w = self.window
-        entries = []
-        try:
-            for path, lp, lh in changed:
+        entries, lines = [], []
+        log(w, "Commit to %s@%s: %s" % (api.repo, api.branch, message))
+        for path, lp, lh in changed:
+            try:
                 with open(lp, "rb") as f:
                     data = f.read()
                 sha = api.create_blob(data)
                 if sha != lh:
-                    return error("hash mismatch for %s (local %s, GitHub %s)" % (path, lh[:7], sha[:7]))
-                entries.append((path, sha))
+                    raise ApiError(0, "hash mismatch (local %s, GitHub %s)" % (lh[:7], sha[:7]), "")
+            except (ApiError, OSError) as e:
+                log(w, "  %s: Error %s\nCommit aborted, nothing was committed." % (path, e))
+                return error("%s could not be uploaded: %s" % (path, e))
+            log(w, "  %s: OK" % path)
+            entries.append((path, sha))
+        try:
             new = api.commit(head, base_tree, entries, message)
         except ApiError as e:
+            log(w, "  Error %s\nCommit aborted, nothing was committed." % e)
             return error(str(e))
         for path, _, lh in changed:
             state["files"][path] = lh
         state["head"] = new
         save_state(folder, state)
-        log(w, "commit %s: %s\n%s" % (new[:7], message, "\n".join("  " + p for p, _ in entries)))
+        log(w, "  Committed as %s" % new[:7])
         ui(sublime.status_message, "GitHub Light: committed %s (%s)" % (describe(len(entries), "file"), new[:7]))
 
 
@@ -514,12 +530,12 @@ class GhlStatusCommand(sublime_plugin.WindowCommand):
                 continue
             if path not in local:
                 (gone if path in stored else newremote).append(path)
-        lines = ["status %s@%s (head %s%s)" % (api.repo, api.branch, head[:7],
+        lines = ["Status %s@%s (head %s%s)" % (api.repo, api.branch, head[:7],
                  "" if head == state.get("head") else ", last sync " + (state.get("head", "")[:7] or "never"))]
         lines.append("  %s unchanged" % describe(same, "file"))
-        for title, items in (("to commit (changed locally)", changed), ("conflict (changed on GitHub and locally)", conflicts),
-                             ("untracked (new local file, not on GitHub)", untracked), ("new on GitHub (download)", newremote),
-                             ("missing locally (on GitHub, deleted or never downloaded)", gone)):
+        for title, items in (("To commit (changed locally)", changed), ("Conflict (changed on GitHub and locally)", conflicts),
+                             ("Untracked (new local file, not on GitHub)", untracked), ("New on GitHub (download)", newremote),
+                             ("Missing locally (on GitHub, deleted or never downloaded)", gone)):
             if items:
                 lines.append("  %s:" % title)
                 lines += ["    " + p for p in items]
@@ -537,7 +553,7 @@ class GhlOpenOnlineCommand(sublime_plugin.WindowCommand):
         v = self.window.active_view()
         fn = v.file_name() if v else None
         if not fn or not os.path.normpath(fn).startswith(folder + os.sep):
-            return error("the current file is not inside the sync folder \"%s\"" % folder)
+            return error("The current file is not inside the sync folder \"%s\"" % folder)
         path = to_remote(self.window, os.path.relpath(fn, folder))
         line = None
         if kind in ("blob", "blame") and v.sel():
@@ -574,19 +590,21 @@ class GhlReleaseCommand(sublime_plugin.WindowCommand):
 
     def choose(self, api, prefix, current):
         if current is None:
-            options = [("1.0.0", "first release (no version tag yet)")]
+            options = [("1.0.0", "First release (no version tag yet)")]
         else:
             ma, mi, pa = current
-            options = [("%d.%d.%d" % (ma, mi, pa + 1), "patch - backward compatible bug fixes"),
-                       ("%d.%d.0" % (ma, mi + 1), "minor - new functionality, backward compatible"),
-                       ("%d.0.0" % (ma + 1), "major - incompatible changes")]
+            options = [("%d.%d.%d" % (ma, mi, pa + 1), "Patch - backward compatible bug fixes"),
+                       ("%d.%d.0" % (ma, mi + 1), "Minor - new functionality, backward compatible"),
+                       ("%d.0.0" % (ma + 1), "Major - incompatible changes")]
         items = [[prefix + v, d + ("" if current is None else "  (current %s%d.%d.%d)" % ((prefix,) + current))] for v, d in options]
 
         def picked(i):
             if i < 0:
                 return
             tag = items[i][0]
-            self.window.show_input_panel("Release title:", tag, lambda title: self.body(api, tag, title), None, None)
+            if not setting(self.window, "ask_release_details"):
+                return run_async(lambda: self.create(api, tag, tag, ""))
+            sublime.set_timeout(lambda: self.window.show_input_panel("Release title:", tag, lambda title: self.body(api, tag, title), None, None), 150)
         self.window.show_quick_panel(items, picked)
 
     def body(self, api, tag, title):
@@ -598,5 +616,5 @@ class GhlReleaseCommand(sublime_plugin.WindowCommand):
             rel = api.release(tag, title.strip() or tag, notes.strip())
         except ApiError as e:
             return error(str(e))
-        log(self.window, "release %s created: %s" % (tag, rel.get("html_url", "")))
+        log(self.window, "Release %s created: %s" % (tag, rel.get("html_url", "")))
         ui(sublime.status_message, "GitHub Light: release %s created" % tag)

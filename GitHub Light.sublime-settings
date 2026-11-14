@@ -28,6 +28,12 @@
     // Show the list of files and ask before a commit.
     "confirm_commit": true,
 
+    // Ask for the commit message. false: the default message is used (the file name, or "Update N files").
+    "ask_commit_message": true,
+
+    // Ask for title and notes when creating a release. false: the title is the tag, the notes stay empty.
+    "ask_release_details": true,
+
     // Prefix of the version tags Create Release makes and reads ("v" -> v1.2.3, "" -> 1.2.3).
     "tag_prefix": "v",
 

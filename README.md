@@ -44,7 +44,7 @@ All in Tools › GitHub Light and in the Command Palette as "GitHub Light: …".
 |---|---|
 | **Download** | Fetches the branch and writes every file that changed on GitHub since your last sync into the folder. A file that you changed locally *and* that differs on GitHub is listed first: Overwrite, Skip them, or Cancel. Files deleted on GitHub are reported, the local copies stay. |
 | **Commit Current File** | Commits the file in the active view if it changed (asks to save it first if needed). |
-| **Commit All** | Commits every changed and every new file of the folder in one commit. With `confirm_commit` the list is shown first; then you type the message. |
+| **Commit All** | Commits every changed and every new file of the folder in one commit. With `confirm_commit` the list is shown first; then you type the message (unless `ask_commit_message` is off). The output panel lists every file with `OK` or the error. |
 | **Status** | Lists in the output panel what is unchanged, to commit, in conflict, untracked, new on GitHub, or missing locally. Reads from GitHub, changes nothing. |
 | **View Online** / **Blame Online** | Opens the current file on GitHub at the line the cursor is on. |
 | **History Online** | Opens the commit history of the current file on GitHub. |
@@ -65,6 +65,8 @@ All in Tools › GitHub Light and in the Command Palette as "GitHub Light: …".
 | `ignore` | state file, `*.sublime-workspace`, `*.sublime-project`, `.DS_Store`, `Thumbs.db` | Glob patterns never synced. |
 | `token` | `""` | The fine-grained personal access token. User settings only. |
 | `confirm_commit` | `true` | Show the file list and ask before committing. |
+| `ask_commit_message` | `true` | Ask for the commit message; `false` uses the default (the file name, or "Update N files"). |
+| `ask_release_details` | `true` | Ask for title and notes of a release; `false` takes the tag as title and no notes. |
 | `tag_prefix` | `"v"` | Prefix of version tags (`v1.2.3`). Set `""` for plain numbers. |
 | `show_panel_on_output` | `true` | Open the output panel when the package reports something. |
 
@@ -89,7 +91,7 @@ None by default. Preferences › Package Settings › GitHub Light › Key Bindi
 * One folder, one repository, one branch per project. No branches, merges, rebases, stashes.
 * Commit never deletes files on GitHub; delete them on the website if you must.
 * Binary files are synced like any other file (by hash), but the compare page on GitHub shows no diff for them.
-* The wiki of a repository is a separate git repository that GitHub does not expose through the API; GitHub Light cannot sync it (keep the wiki pages in the repository and publish them with an action instead).
+* The repository's wiki is a separate git repository that the API does not expose; GitHub Light cannot sync it. Keep the pages in the repository and publish them with [publish-wiki-badges-action](https://github.com/wunditta/publish-wiki-badges-action).
 * Repositories whose tree does not fit into one API response (tens of thousands of files) are not supported.
 
 ## Installation
