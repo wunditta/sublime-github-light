@@ -1,0 +1,73 @@
+[
+    {
+        "id": "tools",
+        "children": [
+            {
+                "caption": "GitHub Light",
+                "id": "github-light",
+                "children": [
+                    { "caption": "Download…", "command": "ghl_download" },
+                    { "caption": "Commit Current File…", "command": "ghl_commit", "args": {"scope": "current"} },
+                    { "caption": "Commit All…", "command": "ghl_commit", "args": {"scope": "all"} },
+                    { "caption": "Status", "command": "ghl_status" },
+                    { "caption": "-" },
+                    { "caption": "View Online", "command": "ghl_open_online", "args": {"kind": "blob"} },
+                    { "caption": "Blame Online", "command": "ghl_open_online", "args": {"kind": "blame"} },
+                    { "caption": "History Online", "command": "ghl_open_online", "args": {"kind": "history"} },
+                    { "caption": "-" },
+                    { "caption": "Create Release…", "command": "ghl_release" },
+                    { "caption": "-" },
+                    {
+                        "caption": "Settings",
+                        "command": "edit_settings",
+                        "args": {
+                            "base_file": "${packages}/GitHub Light/GitHub Light.sublime-settings",
+                            "default": "{\n\t$0\n}\n"
+                        }
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "caption": "Preferences",
+        "mnemonic": "n",
+        "id": "preferences",
+        "children": [
+            {
+                "caption": "Package Settings",
+                "mnemonic": "P",
+                "id": "package-settings",
+                "children": [
+                    {
+                        "caption": "GitHub Light",
+                        "children": [
+                            {
+                                "caption": "Settings",
+                                "command": "edit_settings",
+                                "args": {
+                                    "base_file": "${packages}/GitHub Light/GitHub Light.sublime-settings",
+                                    "default": "{\n\t$0\n}\n"
+                                }
+                            },
+                            {
+                                "caption": "Key Bindings",
+                                "command": "edit_settings",
+                                "args": {
+                                    "base_file": "${packages}/GitHub Light/Default.sublime-keymap",
+                                    "default": "[\n\t$0\n]\n"
+                                }
+                            },
+                            { "caption": "-" },
+                            {
+                                "caption": "README",
+                                "command": "open_file",
+                                "args": { "file": "${packages}/GitHub Light/README.md" }
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+]

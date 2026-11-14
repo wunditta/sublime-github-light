@@ -1,0 +1,36 @@
+{
+    // General settings for all GitHub Light projects.
+    // Every setting here can be overridden per project in the .sublime-project file:
+    //   "settings": { "github_light": { "repository": "owner/name", "folder": "github" } }
+    // Open it with Project > Edit Project. The token belongs here (User settings), never in a project file.
+
+    // The repository the folder is synced with, as "owner/name".
+    "repository": "",
+
+    // The branch.
+    "branch": "main",
+
+    // Local folder holding the working copy of the repository. A relative path is taken from the folder holding
+    // the project file (without a project file: from the first folder in the side bar).
+    "folder": "github",
+
+    // Local folder names that stand for a differently named folder on GitHub (first path segment only).
+    // Default: the local folder "dot-github" is committed as ".github" and ".github" is downloaded into "dot-github".
+    "folder_map": {"dot-github": ".github"},
+
+    // Files never downloaded or committed (glob patterns, matched against the full relative path and the file name).
+    "ignore": [".github-sync-hash.json", "*.sublime-workspace", "*.sublime-project", ".DS_Store", "Thumbs.db"],
+
+    // Fine-grained personal access token (GitHub > Settings > Developer settings > Personal access tokens),
+    // limited to the repository, with the permission "Contents: Read and write". Put it into the User settings file.
+    "token": "",
+
+    // Show the list of files and ask before a commit.
+    "confirm_commit": true,
+
+    // Prefix of the version tags Create Release makes and reads ("v" -> v1.2.3, "" -> 1.2.3).
+    "tag_prefix": "v",
+
+    // Show the output panel when GitHub Light reports something.
+    "show_panel_on_output": true,
+}

@@ -1,0 +1,7 @@
+[
+    // No default key bindings. Copy the entries you want into your user key bindings, e.g.:
+    // { "keys": ["primary+alt+c"], "command": "ghl_commit", "args": {"scope": "current"} },
+    // { "keys": ["primary+shift+alt+c"], "command": "ghl_commit", "args": {"scope": "all"} },
+    // { "keys": ["primary+alt+d"], "command": "ghl_download" },
+    // { "keys": ["primary+alt+h"], "command": "ghl_open_online", "args": {"kind": "history"} }
+]

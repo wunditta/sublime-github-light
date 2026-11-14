@@ -1,0 +1,12 @@
+[
+    { "caption": "GitHub Light: Download", "command": "ghl_download" },
+    { "caption": "GitHub Light: Commit Current File", "command": "ghl_commit", "args": {"scope": "current"} },
+    { "caption": "GitHub Light: Commit All", "command": "ghl_commit", "args": {"scope": "all"} },
+    { "caption": "GitHub Light: Status", "command": "ghl_status" },
+    { "caption": "GitHub Light: View Online", "command": "ghl_open_online", "args": {"kind": "blob"} },
+    { "caption": "GitHub Light: Blame Online", "command": "ghl_open_online", "args": {"kind": "blame"} },
+    { "caption": "GitHub Light: History Online", "command": "ghl_open_online", "args": {"kind": "history"} },
+    { "caption": "GitHub Light: Create Release", "command": "ghl_release" },
+    { "caption": "Preferences: GitHub Light Settings", "command": "edit_settings",
+      "args": { "base_file": "${packages}/GitHub Light/GitHub Light.sublime-settings", "default": "{\n\t$0\n}\n" } }
+]
