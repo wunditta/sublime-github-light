@@ -24,12 +24,12 @@
     "token": "",
 
     // Shows a confirmation dialog with a summary of what will be done (number of files to write, skip, delete, conflicts, etc).
-    // The console shows the full list of files with their actions (in case of ambiguity a suggestion is shown if possible).
+    // The output panel shows the full list of files with their actions (in case of ambiguity a suggestion is shown if possible).
     // Confirming with "OK" will do as requested (i.e. uploading or downloading, ignoring suggested actions, so e.g. an upload
     // will upload even if the file on GitHub is newer); a sync needs to ask per conflict. The button "As suggested" (only
-    // appears if necessary) will follow the suggested actions as shown in the console. Note: the suggested actions depend on the
-    // setting "conflict_and_delete_files". So, for example, if "confirm_file_transfer" is false, no confirmation dialog is
-    // shown, except if the setting "conflict_and_delete_files" wants deletions or conflicts confirmed.
+    // appears if necessary) will follow the suggested actions as shown in the output panel. Note: the suggested actions depend
+    // on the setting "conflict_and_delete_files". So, for example, if this setting is false, no confirmation dialog is shown,
+    // except if the setting "conflict_and_delete_files" wants deletions or conflicts confirmed.
     "confirm_file_transfer": true,
 
     // Any file transfer is written to a state file, which allows to detect conflicts (both sides changed) and if a file was
@@ -95,7 +95,7 @@
 
     // Where GitHub Light writes its output (the plan with every file, the results, errors):
     //   "console": the output panel, shown when something is written (default)
-    //   "tab":     a tab "GitHub Light" that collects the output of all actions until you close it (better for many files)
+    //   "tab":     a scratch-buffer tab "GitHub Light" until you close it (will not ask for save)
     //   "none":    nothing is shown (the output still goes to the panel, open it by hand if needed)
     // Note: it is strongly recommended to keep the output visible, as it is the only source of detailed information about the
     // status of the files. The old setting "show_panel_on_output" (true/false) is still read.

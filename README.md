@@ -5,15 +5,53 @@ A small GitHub client for Sublime Text 4 that needs **no git installation**. It 
 * Sync, download or commit one or all files
 * Create a release
 * View a file's history or blame in the browser
-* Nothing more — no branches, no merging, no history on your disk (but backups for deleted files).
+* Nothing more — no branches, no merging, no history on local disk (but backups for deleted files).
 
 Repository: https://github.com/wunditta/sublime-github-light
 
 ## How it works
 
-The package compares **content hashes**: for every file it computes git's blob hash (`sha1("blob <size>\0" + content)`) locally and compares it with the hashes of the branch. The hashes of your last sync are kept in the local file `.github-sync-hash.json` inside the folder. This is how the package knows whether a file changed on your side, on GitHub, or on both. If anything would be overwritten, which should not happen without your consent, a confirmation is required.
+### Comparison first
+
+Before any file transfer is done the actions are planned. This is done by comparing each file with a hash token from the last sync (to clearly identify changes on either side and deletions) or by comparing the modification dates (for unknown files).
+
+**Hash**: The package compares **content hashes**, i.e. for every file it computes git's blob hash (`sha1("blob <size>\0" + content)`) locally and compares it with the hashes of the branch. The hashes of the last sync are kept in the local file `.github-sync-hash.json` inside the folder. This is how the package knows whether a file changed on local side, on GitHub, or on both. If anything would be overwritten, which should not happen without your consent, a confirmation is required.
+
+### Output Panel
+
+The output panel (console or full tab (setting `output_results`)) shows the status for each individual file (except if both sides are unchanged), and also suggests an action if the situation is unclear.
+
+If files have another version on GitHub since the last commit (i.e. the categories "Conflict", "Unknown", "Download", "Commit (older)"), a link will be provided to GitHub’s comparison of all changes (diff).
+
+
+### Confirmation Dialog
+
+A dialog (if `confirm_file_transfer` is true, or if unresolvable situations) shows the changes only summarized for the observed **categories** with the number of concerned files. It offers three options:
+* "OK": Download or upload forcefully (but still honoring the setting of `conflict_and_delete_files`). For syncing each individual conflict needs to be resolved manually.
+* "As Suggested" (only present if suggestions available): Follows the suggestions as shown in the output panel.
+* "Cancel"
+
+| Category | Description
+|---|---|
+| Unchanged | on both sides
+| Download / Commit | updates an existing file
+| Download (new) / Commit (new) | adds a non-existing file
+| Conflict | changed on both sides (suggestion depends on `conflict_and_delete_files`)
+| Unknown | exist on both sides but never synced (so no hash token), thus an unknown situation (handled like a conflict)
+| Both (new) | like Unknown, but `conflict_and_delete_files` specifies to keep both
+| Delete local / Delete GitHub | will be deleted, as it was deleted on the other side (clearly identified with the hash tokens)
+| Keep local (prefs) / Keep GitHub (prefs) | like Delete above, but the preferences forbid deletions (setting `conflict_and_delete_files`)
+| Commit (older) / Download (older) | only for Commit or Download, when the own side is the older one (GitHub changed the file and you did not, or the other way round); suggested is to keep the newer version, so nothing is transferred, but "OK" in the confirmation dialog overwrites it anyway (with backup)
+
+### File Transfer
 
 Commits are made directly on the branch with the Git Data API (blobs → tree → commit → ref), one commit for all files you commit together. They appear on GitHub like any other commit, authored by the owner of the token.
+
+After the transfer the output panel lists every file that was downloaded, committed or deleted.
+
+The hash file (`.github-sync-hash.json`), the `_backup` folder, and the Sublime project and workspace files are not synced by default according to setting "ignore".
+
+**Backups**: A local file is copied into `_backup` before it is deleted or overwritten (unless setting `conflict_and_delete_files` is "chaos"), and on GitHub the history keeps every version.
 
 ## Setup
 
@@ -72,28 +110,6 @@ Commits are made directly on the branch with the Git Data API (blobs → tree �
 | **Create Release** | Reads the latest version tag of the repository and offers three defaults (according to semantic versioning, each increasing one of "patch" (bug, vx.x.2), "minor" (compatible change, vx.2.0), or "major" (incompatible change, v2.0.0); starting with "v1.0.0"). Then the title (input panel) and the notes, which open in an editor tab with Markdown highlighting and word wrap (if you maintain a CHANGELOG.md file it is prefilled with the text from it; see below *Release notes from the changelog*). The top of the panel shows how to confirm the release (button, **Ctrl+S**, etc). Tag and release are created on the branch head, marked according to the setting `release_label` (latest / pre-release / none). Note: publishing on the marketplace cannot be done that way, so you would need to enable this manually (only once, further releases keep it). |
 | **Move Tag** | Creates or updates a pointer tag to the current branch head (see below *Moving Tag*). The name is asked for, prefilled per `moving_tag`. |
 
-### Categories, conflicts and the confirmation dialog
-
-Before any file transfer is done the actions are planned and asked for confirmation (if `confirm_file_transfer` is true, or if unresolvable situations). This is done by comparing each file with a hash token from the last sync (to clearly identify changes on either side and deletions) or by comparing the modification dates. The dialog shows all existing **categories** with the number of concerned files. The console panel shows this for each individual file and also suggests an action if the situation is unclear. The confirmation dialog offers three options:
-* "OK": Download or upload forcefully (but still honoring the setting of `conflict_and_delete_files`). For syncing each individual conflict needs to be resolved manually.
-* "As Suggested" (only present if suggestions available): Follows the suggestions as shown in the console.
-* "Cancel"
-
-The **categories** are:
-* Unchanged
-* Download / Commit: updates an existing file
-* Download (new) / Commit (new): adds a non-existing file
-* Conflict: changed on both sides (suggestion depends on `conflict_and_delete_files`)
-* Unknown: exist on both sides but never synced (so no hash token), thus an unknown situation (handled like a conflict)
-* Both (new): like Unknown, but `conflict_and_delete_files` specifies to keep both
-* Delete local / Delete GitHub: will be deleted, as it was deleted on the other side (clearly identified with the hash tokens)
-* Keep local (prefs) / Keep GitHub (prefs): like Delete above, but the preferences forbid deletions (setting `conflict_and_delete_files`)
-* Commit (older) / Download (older): only for Commit or Download, when the own side is the older one (GitHub changed the file and you did not, or the other way round); suggested is to keep the newer version, so nothing is transferred, but "OK" in the confirmation dialog overwrites it anyway (with backup)
-
-The hash file (`.github-sync-hash.json`) and the `_backup` folder are never synced according to setting "ignore".
-
-**Backups**: A local file is copied into `_backup` before it is deleted or overwritten (unless setting `conflict_and_delete_files` is "chaos"), and on GitHub the history keeps every version.
-
 ### Moving tags
 
 A release tag should follow the semantic versioning (`v1.2.3`). A *moving tag* is a second tag such as `v1` or `v1.2` that is re-pointed to every new release. A reference to the repo with the moving tag always gets the latest compatible version without changing anything. This is especially common for **GitHub Actions**, which users reference exactly this way (`uses: owner/action@v1`). Some projects offer a `latest` tag in the same spirit. Package Control and most other package managers read the version tags themselves, so for a Sublime package or an ordinary repository you may not need this function (set `moving_tag` to "").
@@ -133,12 +149,12 @@ When `sublime_version_files` is enabled, the same information is written to Pack
     "token": "",
 
     // Shows a confirmation dialog with a summary of what will be done (number of files to write, skip, delete, conflicts, etc).
-    // The console shows the full list of files with their actions (in case of ambiguity a suggestion is shown if possible).
+    // The output panel shows the full list of files with their actions (in case of ambiguity a suggestion is shown if possible).
     // Confirming with "OK" will do as requested (i.e. uploading or downloading, ignoring suggested actions, so e.g. an upload
     // will upload even if the file on GitHub is newer); a sync needs to ask per conflict. The button "As suggested" (only
-    // appears if necessary) will follow the suggested actions as shown in the console. Note: the suggested actions depend on the
-    // setting "conflict_and_delete_files". So, for example, if this setting is false, no confirmation dialog is shown, except if
-    // the setting "conflict_and_delete_files" wants deletions or conflicts confirmed.
+    // appears if necessary) will follow the suggested actions as shown in the output panel. Note: the suggested actions depend
+    // on the setting "conflict_and_delete_files". So, for example, if this setting is false, no confirmation dialog is shown,
+    // except if the setting "conflict_and_delete_files" wants deletions or conflicts confirmed.
     "confirm_file_transfer": true,
 
     // Any file transfer is written to a state file, which allows to detect conflicts (both sides changed) and if a file was
