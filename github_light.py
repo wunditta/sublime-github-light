@@ -175,7 +175,8 @@ def output_tab(window):
     return v
 
 
-def log(window, text):
+def log(window, text, gap=False):
+    """appends text to the console or the tab; gap: an empty line before it unless the output is still empty"""
     def do():
         w = window or sublime.active_window()
         if w is None:
@@ -187,6 +188,9 @@ def log(window, text):
             view = w.find_output_panel(PANEL) or w.create_output_panel(PANEL)
         start = view.size()
         view.set_read_only(False)
+        if gap and start:
+            view.run_command("append", {"characters": "\n", "scroll_to_end": False})
+            start = view.size()
         view.run_command("append", {"characters": text.rstrip("\n") + "\n", "scroll_to_end": False})
         view.set_read_only(True)
         if mode == "console" and w.active_panel() != "output." + PANEL:
@@ -213,7 +217,7 @@ def started(window, what):
     either way the output of this action starts at the top of the panel or tab"""
     anchor()
     if output_mode(window) != "none":
-        log(window, "%s started..." % what)
+        log(window, "%s started..." % what, gap=True)
 
 
 def error(text):
@@ -713,7 +717,7 @@ def review(window, api, folder, plan):
     log(window, plan_text(api, plan))
     forced = (bool(deletions) and (m == "ask" or (m == "sync" and op != "sync"))) or bool(questions)
     if confirm_transfer(window) or forced:
-        msg = "%s %s@%s\n\n%s\n\n(details in the console)" % (title, api.repo, api.branch, "\n".join("%s: %d" % (k, n) for k, n in counts))
+        msg = "%s %s@%s\n\n%s" % (title, api.repo, api.branch, "\n".join("%s: %d" % (k, n) for k, n in counts))
         if questions or older:
             r = sublime.yes_no_cancel_dialog(msg, "OK", "As Suggested")
             if r == sublime.DIALOG_CANCEL:
@@ -798,6 +802,8 @@ def apply_plan(window, api, folder, plan, message):
     title = OP_TITLE[plan.op]
     keep_backup = mode(w) != "chaos"
     errors, done = [], []
+    if output_mode(w) != "none":
+        log(w, "Starting transfer now...")
 
     def did(what, it, note=""):
         done.append("  %-21s %s%s" % (what + ":", it.path, note))
