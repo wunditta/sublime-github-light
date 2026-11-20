@@ -6,26 +6,21 @@
                 "caption": "GitHub Light",
                 "id": "github-light",
                 "children": [
-                    { "caption": "Download…", "command": "ghl_download" },
-                    { "caption": "Commit Current File…", "command": "ghl_commit", "args": {"scope": "current"} },
-                    { "caption": "Commit All…", "command": "ghl_commit", "args": {"scope": "all"} },
+                    { "caption": "Sync", "command": "ghl_sync" },
+                    { "caption": "Download", "command": "ghl_download" },
+                    { "caption": "Commit Current File", "command": "ghl_commit", "args": {"scope": "current"} },
+                    { "caption": "Commit All", "command": "ghl_commit", "args": {"scope": "all"} },
                     { "caption": "Status", "command": "ghl_status" },
                     { "caption": "-" },
                     { "caption": "View Online", "command": "ghl_open_online", "args": {"kind": "blob"} },
                     { "caption": "Blame Online", "command": "ghl_open_online", "args": {"kind": "blame"} },
                     { "caption": "History Online", "command": "ghl_open_online", "args": {"kind": "history"} },
+                    { "caption": "Diff File", "command": "ghl_diff" },
                     { "caption": "-" },
                     { "caption": "Create Release…", "command": "ghl_release" },
                     { "caption": "Move Tag…", "command": "ghl_move_tag" },
                     { "caption": "-" },
-                    {
-                        "caption": "Settings",
-                        "command": "edit_settings",
-                        "args": {
-                            "base_file": "${packages}/GitHub Light/GitHub Light.sublime-settings",
-                            "default": "{\n\t$0\n}\n"
-                        }
-                    }
+                    { "caption": "Settings", "command": "ghl_settings" }
                 ]
             }
         ]
@@ -43,19 +38,13 @@
                     {
                         "caption": "GitHub Light",
                         "children": [
-                            {
-                                "caption": "Settings",
-                                "command": "edit_settings",
-                                "args": {
-                                    "base_file": "${packages}/GitHub Light/GitHub Light.sublime-settings",
-                                    "default": "{\n\t$0\n}\n"
-                                }
-                            },
+                            { "caption": "Settings", "command": "ghl_settings" },
                             {
                                 "caption": "Key Bindings",
                                 "command": "edit_settings",
                                 "args": {
                                     "base_file": "${packages}/GitHub Light/Default.sublime-keymap",
+                                    "user_file": "${packages}/User/Default (${platform}).sublime-keymap",
                                     "default": "[\n\t$0\n]\n"
                                 }
                             },

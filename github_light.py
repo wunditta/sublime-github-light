@@ -1,12 +1,12 @@
 """GitHub Light - a small GitHub client for Sublime Text that needs no git.
 
 Keeps one folder of the project in sync with one branch of one GitHub repository through the REST API:
-Download, Commit Current / Commit All, Status, View / Blame / History online, Create Release.
+Sync, Download, Commit Current / Commit All, Status, View / Blame / History online, Create Release.
 Change detection uses git's blob hash (sha1 of "blob <size>\\0" + content), computed locally and compared
 with the branch tree; the hashes of the last sync live in <folder>/.github-sync-hash.json.
 """
 import sublime, sublime_plugin
-import os, re, json, base64, hashlib, fnmatch, threading, webbrowser, datetime, urllib.request, urllib.error, urllib.parse
+import os, re, json, base64, hashlib, fnmatch, threading, webbrowser, datetime, calendar, time, urllib.request, urllib.error, urllib.parse
 
 SETTINGS_FILE = "GitHub Light.sublime-settings"
 PROJECT_KEY = "github_light"
@@ -19,16 +19,18 @@ DEFAULTS = {
     "branch": "main",
     "folder": "",
     "folder_map": {"dot-github": ".github"},
-    "ignore": [STATE_FILE, "*.sublime-workspace", "*.sublime-project", ".DS_Store", "Thumbs.db"],
+    "ignore": [STATE_FILE, "_backup", "*.sublime-workspace", "*.sublime-project", ".DS_Store", "Thumbs.db"],
     "token": "",
-    "confirm_commit": True,
+    "confirm_file_transfer": True,
+    "conflict_and_delete_files": "ask",
     "ask_commit_message": True,
-    "ask_release_details": True,
+    "ask_release_details": "all",
     "tag_prefix": "v",
     "moving_tag": "ask",
+    "release_label": "latest",
     "release_notes_from_changelog": False,
     "sublime_version_files": False,
-    "show_panel_on_output": True,
+    "output_results": "console",
 }
 
 
@@ -99,12 +101,12 @@ def local_files(window, folder):
     """{remote path: absolute local path} of every file in the folder that is not ignored"""
     out = {}
     for root, dirs, files in os.walk(folder):
-        dirs[:] = [d for d in dirs if d != ".git"]
+        dirs[:] = [d for d in dirs if d != ".git" and not (root == folder and d == BACKUP_DIR)]
         for fn in files:
             full = os.path.join(root, fn)
             rel = os.path.relpath(full, folder).replace("\\", "/")
             remote = to_remote(window, rel)
-            if ignored(window, remote) or ignored(window, rel):
+            if ignored(window, remote) or ignored(window, rel) or DATED_COPY.search(fn):
                 continue
             out[remote] = full
     return out
@@ -146,18 +148,72 @@ def save_state(folder, state):
 
 # ---------------------------------------------------------------- output
 
+_anchor_next = [False]      # the next log() puts its first line at the top of the output (set when an action starts)
+_anchor_pos = {}            # view id -> layout y of the current action's first line: the view is kept there while output grows
+OUTPUT_TAB = "GitHub Light"
+
+
+def output_mode(window):
+    """output_results: "none" (written to the panel, never shown), "console" (the output panel is shown), "tab" (a scratch
+    tab "GitHub Light" that stays until closed); the old key show_panel_on_output (true/false) is still read"""
+    if not has_setting(window, "output_results") and has_setting(window, "show_panel_on_output"):
+        return "console" if setting(window, "show_panel_on_output") else "none"
+    v = str(setting(window, "output_results") or "console").lower()
+    return v if v in ("none", "console", "tab") else "console"
+
+
+def output_tab(window):
+    """the scratch tab that collects the output (output_results = "tab"), created when missing"""
+    for v in window.views():
+        if v.settings().get("ghl_output"):
+            return v
+    v = window.new_file()
+    v.set_name(OUTPUT_TAB)
+    v.set_scratch(True)
+    v.settings().set("ghl_output", True)
+    v.settings().set("word_wrap", False)
+    return v
+
+
 def log(window, text):
     def do():
         w = window or sublime.active_window()
         if w is None:
             return
-        panel = w.find_output_panel(PANEL) or w.create_output_panel(PANEL)
-        panel.set_read_only(False)
-        panel.run_command("append", {"characters": text.rstrip("\n") + "\n", "scroll_to_end": True})
-        panel.set_read_only(True)
-        if setting(w, "show_panel_on_output"):
+        mode = output_mode(w)
+        if mode == "tab":
+            view = output_tab(w)
+        else:
+            view = w.find_output_panel(PANEL) or w.create_output_panel(PANEL)
+        start = view.size()
+        view.set_read_only(False)
+        view.run_command("append", {"characters": text.rstrip("\n") + "\n", "scroll_to_end": False})
+        view.set_read_only(True)
+        if mode == "console" and w.active_panel() != "output." + PANEL:
             w.run_command("show_panel", {"panel": "output." + PANEL})
+        if _anchor_next[0]:                                   # the start of an action: its first line at the top
+            _anchor_next[0] = False
+            _anchor_pos.clear()
+            _anchor_pos[view.id()] = view.text_to_layout(start)[1]
+            if mode == "tab":
+                w.focus_view(view)
+        y = _anchor_pos.get(view.id())
+        if y is not None:                                     # showing the panel and appending may scroll: back to the anchor
+            sublime.set_timeout(lambda: view.set_viewport_position((0, y), False), 20)
     sublime.set_timeout(do, 0)
+
+
+def anchor():
+    """the next line written to the panel becomes the first visible line (called when an action starts)"""
+    _anchor_next[0] = True
+
+
+def started(window, what):
+    """"<what> started..." in the output, only when the output is shown (it is feedback that something is running);
+    either way the output of this action starts at the top of the panel or tab"""
+    anchor()
+    if output_mode(window) != "none":
+        log(window, "%s started..." % what)
 
 
 def error(text):
@@ -229,12 +285,22 @@ class Api(object):
     def blob(self, sha):
         return self.call("GET", self.r("/git/blobs/" + sha), raw=True)
 
+    def last_commit_time(self, path):
+        """Time (seconds since the epoch) of the last commit on the branch that touched the path, None if unknown."""
+        q = "/commits?path=%s&sha=%s&per_page=1" % (urllib.parse.quote(path, safe=""), urllib.parse.quote(self.branch, safe=""))
+        commits = self.call("GET", self.r(q))
+        try:
+            date = commits[0]["commit"]["committer"]["date"]            # e.g. 2026-11-15T10:49:32Z
+            return calendar.timegm(time.strptime(date[:19], "%Y-%m-%dT%H:%M:%S"))
+        except (IndexError, KeyError, TypeError, ValueError):
+            return None
+
     def create_blob(self, data):
         return self.call("POST", self.r("/git/blobs"),
                          {"content": base64.b64encode(data).decode("ascii"), "encoding": "base64"})["sha"]
 
     def commit(self, head, base_tree, entries, message):
-        """entries: [(remote path, blob sha)] -> new commit sha"""
+        """entries: [(remote path, blob sha)], sha None deletes the path -> new commit sha"""
         tree = self.call("POST", self.r("/git/trees"),
                          {"base_tree": base_tree, "tree": [{"path": p, "mode": "100644", "type": "blob", "sha": s} for p, s in entries]})
         commit = self.call("POST", self.r("/git/commits"), {"message": message, "tree": tree["sha"], "parents": [head]})
@@ -263,9 +329,11 @@ class Api(object):
             self.call("PATCH", self.r("/git/refs/tags/" + urllib.parse.quote(name, safe="")), {"sha": sha, "force": True})
         return old
 
-    def release(self, tag, name, body):
+    def release(self, tag, name, body, label="latest"):
+        """label: "latest" (marked as the latest release), "pre" (pre-release), "none" (neither)"""
         return self.call("POST", self.r("/releases"),
-                         {"tag_name": tag, "target_commitish": self.branch, "name": name, "body": body or ""})
+                         {"tag_name": tag, "target_commitish": self.branch, "name": name, "body": body or "",
+                          "prerelease": label == "pre", "make_latest": "true" if label == "latest" else "false"})
 
     def web(self, kind, path="", line=None):
         base = "https://github.com/%s" % self.repo
@@ -280,6 +348,30 @@ class Api(object):
 
 
 # ---------------------------------------------------------------- helpers
+
+def ask_mode(window):
+    """ask_release_details: "all" (title and notes), "notes" (title = tag, notes tab), "never"; true/false of old files are accepted"""
+    v = setting(window, "ask_release_details")
+    if v is True:
+        return "all"
+    if v is False or v is None:
+        return "never"
+    v = str(v).lower()
+    return v if v in ("all", "notes", "never") else "all"
+
+
+def ui_confirm(message, ok_title):
+    """ok_cancel_dialog from a worker thread: run it on the UI thread and wait for the answer"""
+    result = {}
+    done = threading.Event()
+
+    def ask():
+        result["ok"] = sublime.ok_cancel_dialog(message, ok_title)
+        done.set()
+    sublime.set_timeout(ask, 0)
+    done.wait()
+    return result.get("ok", False)
+
 
 def run_async(fn):
     threading.Thread(target=fn, daemon=True).start()
@@ -351,19 +443,23 @@ def moving_tag_name(window, prefix, version, mode=None):
     return mode
 
 
-def default_message(changed):
-    """GitHub's own wording: "Add x.md" / "Update x.md" / "Add 2 files, update 3 files" """
-    added = [p for p, _, _, new in changed if new]
-    updated = [p for p, _, _, new in changed if not new]
-    if len(changed) == 1:
-        return ("Add " if added else "Update ") + changed[0][0]
+def default_message(items):
+    """GitHub's own wording: "Add x.md" / "Update x.md" / "Delete x.md" / "Add 2 files, update 3 files, delete 1 file" """
+    added = [it.path for it in items if it.action != "delete_remote" and it.new]
+    updated = [it.path for it in items if it.action != "delete_remote" and not it.new]
+    deleted = [it.path for it in items if it.action == "delete_remote"]
+    if len(items) == 1:
+        return ("Add " if added else "Delete " if deleted else "Update ") + items[0].path
     parts = []
     if added:
         parts.append("add " + describe(len(added), "file"))
     if updated:
         parts.append("update " + describe(len(updated), "file"))
+    if deleted:
+        parts.append("delete " + describe(len(deleted), "file"))
     text = ", ".join(parts)
     return text[0].upper() + text[1:]
+
 
 def short_list(names):
     """the first few names for a dialog (message boxes have no scrollbar); the full list goes to the output panel"""
@@ -374,128 +470,510 @@ def short_list(names):
 
 # ---------------------------------------------------------------- commands
 
-class GhlDownloadCommand(sublime_plugin.WindowCommand):
-    """Write every file of the branch that changed since the last sync into the folder."""
+CLOCK_SLACK = 120          # seconds of tolerance between the local clock and GitHub's commit times
+BACKUP_DIR = "_backup"     # next to the state file; a local file is copied there before it is deleted or overwritten
+MODES = ("never", "both", "ask", "sync", "always", "chaos")
+DATED_COPY = re.compile(r" \(\d{4}-\d{2}-\d{2} \d{2}_\d{2}\)(\.[^./]+)?$")   # "name (2026-11-19 10_22).md": a kept older version, never synced
 
-    def run(self):
-        p = prepare(self.window)
-        if not p:
-            return
-        api, folder = p
-        run_async(lambda: self.work(api, folder))
 
-    def work(self, api, folder):
-        w = self.window
+def local_newer(api, path, lp):
+    """True if the local file was modified after the last commit that touched the path on GitHub, False if before,
+    None when the commit time is not available."""
+    try:
+        ct = api.last_commit_time(path)
+        if ct is None:
+            return None
+        return os.path.getmtime(lp) > ct + CLOCK_SLACK
+    except (ApiError, OSError):
+        return None
+
+
+def has_setting(window, key):
+    """is the key set explicitly (project file or settings file), not just a default?"""
+    if window is not None:
+        proj = ((window.project_data() or {}).get("settings") or {}).get(PROJECT_KEY) or {}
+        if key in proj:
+            return True
+    return sublime.load_settings(SETTINGS_FILE).has(key)
+
+
+def confirm_transfer(window):
+    """confirm_file_transfer; the old key confirm_commit is still read when the new one is not set"""
+    if not has_setting(window, "confirm_file_transfer") and has_setting(window, "confirm_commit"):
+        return bool(setting(window, "confirm_commit"))
+    return bool(setting(window, "confirm_file_transfer"))
+
+
+def mode(window):
+    """conflict_and_delete_files; the old key delete_files is still read when the new one is not set"""
+    if not has_setting(window, "conflict_and_delete_files") and has_setting(window, "delete_files"):
+        v = setting(window, "delete_files")
+    else:
+        v = setting(window, "conflict_and_delete_files")
+    v = str(v or "ask").lower()
+    return v if v in MODES else "ask"
+
+
+def backup(folder, lp):
+    """Copy a local file into <folder>/_backup/<relative path> (an earlier backup of the same file is replaced)."""
+    rel = os.path.relpath(lp, folder)
+    dest = os.path.join(folder, BACKUP_DIR, rel)
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(lp, "rb") as src, open(dest, "wb") as dst:
+        dst.write(src.read())
+
+
+def dated_name(lp, when):
+    """'name (2026-11-19 10_22).ext' next to lp, for the older version of a conflict kept locally"""
+    d, fn = os.path.split(lp)
+    stem, ext = os.path.splitext(fn)
+    return os.path.join(d, "%s (%s)%s" % (stem, time.strftime("%Y-%m-%d %H_%M", time.localtime(when)), ext))
+
+
+class Item(object):
+    """One path of a plan. cat: the category shown ("Download", "Commit (new)", "Conflict", "Unknown", "Commit (older)", ...);
+    action: what will be done: "download", "commit", "delete_local", "delete_remote", "both" (newer keeps the name,
+    the older version is kept locally as a dated copy), "skip"; ask: the item is a conflict the user may be asked about."""
+
+    def __init__(self, path, lp, local, remote, base):
+        self.path, self.lp = path, lp
+        self.local, self.remote, self.base = local, remote, base
+        self.cat, self.action, self.ask, self.newer, self.why = "", "skip", False, None, ""
+        self.question = False      # asked per file (conflicts); an "(older)" item is only overridable by OK in the dialog
+        self.hint = ""             # the suggestion text when it is not the action word ("keep GitHub (newer)")
+
+    @property
+    def new(self):
+        return self.cat.endswith("(new)")
+
+    def suggestion(self):
+        if not self.ask:
+            return ""
+        if self.hint:
+            return "-> suggested: " + self.hint
+        words = {"download": "download", "commit": "commit", "both": "keep both", "skip": "skip"}
+        why = {True: "local newer", False: "GitHub newer"}.get(self.newer, "no dates")
+        return "-> suggested: %s (%s)" % (words[self.action], self.why or why)
+
+    def text(self, width=0):
+        """the plan line: category and path in fixed columns, the suggestion behind them"""
+        line = "%-21s %s" % (self.cat + ":", self.path)
+        sug = self.suggestion()
+        return ("%-*s   %s" % (22 + width, line, sug)) if sug else line
+
+
+class Plan(object):
+    def __init__(self, op, head, base_tree, state, items, unchanged):
+        self.op, self.head, self.base_tree, self.state, self.items, self.unchanged = op, head, base_tree, state, items, unchanged
+        self.unchanged_paths = []
+
+    def counts(self):
+        """[(category, n)] in the order of the categories, zeros omitted"""
+        order = ["Conflict", "Unknown", "Both (new)", "Download", "Download (new)", "Download (older)", "Commit", "Commit (new)",
+                 "Commit (older)", "Delete local", "Delete GitHub", "Keep local (prefs)", "Keep GitHub (prefs)"]
+        c = {}
+        for it in self.items:
+            c[it.cat] = c.get(it.cat, 0) + 1
+        out = [(k, c[k]) for k in order if c.get(k)]
+        if self.unchanged:
+            out.append(("Unchanged", self.unchanged))
+        return out
+
+
+OP_TITLE = {"sync": "Sync", "download": "Download", "commit": "Commit", "status": "Status"}
+
+
+def conflict_rule(it, op, m):
+    """Category "Conflict" (or "Unknown"): action and suggestion per conflict_and_delete_files."""
+    it.ask, it.question = True, True
+    if m == "never":
+        it.action, it.why = "skip", "prefs"
+        return
+    if m == "both":
+        it.action, it.why = "both", "prefs"
+        return
+    # ask / sync / always / chaos: the newer side wins; a one-way operation only in its direction
+    if it.newer is None:
+        it.action = "skip"
+    elif it.newer:
+        it.action = "commit" if op != "download" else "skip"
+    else:
+        it.action = "download" if op != "commit" else "skip"
+    if m in ("always", "chaos"):
+        it.ask, it.question = False, False                    # decided by the setting, nothing to ask
+
+
+def make_plan(window, api, folder, op, limit=None):
+    """Compare the folder, the branch and the last sync (three-way, per path) and decide the action per path.
+    op: "sync" (both directions), "download" (GitHub -> local only), "commit" (local -> GitHub only).
+    limit: a predicate on the remote path restricting the run to chosen files or folders. Raises ApiError."""
+    head = api.head()
+    remote, base_tree = api.tree(head)
+    state = load_state(folder)
+    stored = state["files"]
+    local = local_files(window, folder)
+    m = mode(window)
+    may_delete = m not in ("never", "both")
+    paths = set(local) | set(remote) | set(stored)
+    items, unchanged, unchanged_paths = [], 0, []
+    for path in sorted(paths):
+        if ignored(window, path):
+            continue
+        lp = local.get(path) or os.path.join(folder, to_local(window, path).replace("/", os.sep))
+        if limit and not limit(path, lp):
+            continue
+        L = file_hash(lp) if os.path.isfile(lp) else None
+        R, B = remote.get(path), stored.get(path)
+        if L is None and R is None:
+            del stored[path]                                  # gone on both sides: stale entry
+            continue
+        if L is not None and L == R:
+            stored[path] = L                                  # identical: nothing to do, adopt
+            unchanged += 1
+            unchanged_paths.append(path)
+            continue
+        it = Item(path, lp, L, R, B)
+        if L is not None and R is not None:
+            it.newer = local_newer(api, path, lp)
+            if B is None:                                     # never synced: nobody knows who changed it
+                it.cat = "Both (new)" if m == "both" else "Unknown"
+                conflict_rule(it, op, m)
+                if m == "both":
+                    it.ask = False                            # both are kept, nothing to suggest
+            elif B == L:                                      # unchanged here, changed on GitHub
+                if op == "commit":                            # nothing to upload unless forced: GitHub's version is the newer
+                    it.cat, it.ask, it.hint = "Commit (older)", True, "keep GitHub (newer)"
+                else:
+                    it.cat, it.action = "Download", "download"
+            elif B == R:                                      # changed here, unchanged on GitHub
+                if op == "download":
+                    it.cat, it.ask, it.hint = "Download (older)", True, "keep local (newer)"
+                else:
+                    it.cat, it.action = "Commit", "commit"
+            else:                                             # changed on both sides
+                it.cat = "Conflict"
+                conflict_rule(it, op, m)
+        elif L is not None:                                   # only here
+            if B is None:
+                if op == "download":
+                    continue                                  # a new local file is not Download's business
+                it.cat, it.action = "Commit (new)", "commit"
+            else:                                             # deleted on GitHub since the last sync
+                if op == "commit":
+                    continue
+                it.cat, it.action = ("Delete local", "delete_local") if may_delete else ("Keep local (prefs)", "skip")
+        else:                                                 # only on GitHub
+            if B is None:
+                if op == "commit":
+                    continue
+                it.cat, it.action = "Download (new)", "download"
+            else:                                             # deleted here since the last sync
+                if op == "download":
+                    continue
+                it.cat, it.action = ("Delete GitHub", "delete_remote") if may_delete else ("Keep GitHub (prefs)", "skip")
+        items.append(it)
+    plan = Plan(op, head, base_tree, state, items, unchanged)
+    plan.unchanged_paths = unchanged_paths
+    return plan
+
+
+def plan_text(api, plan):
+    """the console text of a plan: the summary line and one line per file, the compare link below when GitHub holds other versions"""
+    counts = plan.counts()
+    summary = ", ".join("%s: %d" % (k, n) for k, n in counts)
+    width = max([len(it.path) for it in plan.items] + [0])
+    order = [k for k, _ in plan.counts()]
+    key = lambda it: (order.index(it.cat) if it.cat in order else 99, it.path)
+    asks = sorted([it for it in plan.items if it.ask], key=key)      # the files with a suggestion first, then the compare page
+    rest = sorted([it for it in plan.items if not it.ask], key=key)
+    lines = ["  " + it.text(width) for it in asks + rest]
+    if plan.unchanged:
+        lines.append("  %-21s %d" % ("Unchanged:", plan.unchanged))
+    text = "%s %s@%s: %s\n%s" % (OP_TITLE[plan.op], api.repo, api.branch, summary, "\n".join(lines))
+    diffs = [k for k, _ in counts if k in ("Conflict", "Unknown", "Download", "Commit (older)")]
+    if diffs and plan.state.get("head") and plan.head != plan.state.get("head"):   # files changed on GitHub since the last sync: its comparison of the two commits
+        text += "\nView diffs for %s on GitHub\n%s" % (", ".join(diffs), compare_url(api, plan.state))
+    return text
+
+
+def review(window, api, folder, plan):
+    """UI thread. Writes the plan to the panel; shows the confirmation dialog (counts only) when confirm_file_transfer
+    is on or the setting wants deletions or conflicts confirmed; then asks per conflict where the setting says so,
+    then the commit message, then applies the plan."""
+    op, items, m = plan.op, plan.items, mode(window)
+    title = OP_TITLE[op]
+    if not items:
+        log(window, "%s: nothing to do, the folder matches %s@%s" % (title, api.repo, api.branch))
+        return sublime.status_message("GitHub Light: nothing to %s" % op)
+    counts = plan.counts()
+    asks = [it for it in items if it.ask]                     # items with a suggestion: conflicts and "(older)" items
+    questions = [it for it in asks if it.question and m in ("ask", "sync")]   # conflicts asked per file
+    older = [it for it in asks if not it.question]            # "(older)" items: overridable by OK in the dialog only
+    deletions = [it for it in items if it.action in ("delete_local", "delete_remote")]
+    log(window, plan_text(api, plan))
+    forced = (bool(deletions) and (m == "ask" or (m == "sync" and op != "sync"))) or bool(questions)
+    if confirm_transfer(window) or forced:
+        msg = "%s %s@%s\n\n%s\n\n(details in the console)" % (title, api.repo, api.branch, "\n".join("%s: %d" % (k, n) for k, n in counts))
+        if questions or older:
+            r = sublime.yes_no_cancel_dialog(msg, "OK", "As Suggested")
+            if r == sublime.DIALOG_CANCEL:
+                return log(window, "%s cancelled" % title)
+            if r == sublime.DIALOG_NO:                        # As Suggested: the suggestions stand
+                return message_then_apply(window, api, folder, plan)
+            if op != "sync":                                  # OK: the operation's direction for every conflict and "(older)" item
+                for it in questions + older:
+                    it.action = "download" if op == "download" else "commit"
+                return message_then_apply(window, api, folder, plan)
+            return ask_conflicts(window, api, folder, plan, questions, 0, None)
+        if not sublime.ok_cancel_dialog(msg, "OK"):
+            return log(window, "%s cancelled" % title)
+        return message_then_apply(window, api, folder, plan)
+    if m in ("always", "chaos") and op != "sync":             # no dialog, no asking: "(older)" items go as requested
+        for it in older:
+            it.action = "download" if op == "download" else "commit"
+    if questions:                                             # no dialog: ask per file
+        return ask_conflicts(window, api, folder, plan, questions, 0, None)
+    message_then_apply(window, api, folder, plan)
+
+
+def conflict_choices(op):
+    """(label, action) pairs of the per-file question; the dialog adds "for all remaining" variants."""
+    if op == "sync":
+        return [("Keep local version (commit)", "commit"), ("Keep GitHub version (download)", "download"),
+                ("Keep both (the older as a dated copy)", "both"), ("Skip", "skip")]
+    if op == "download":
+        return [("Overwrite the local file", "download"), ("Keep the local file", "skip")]
+    return [("Overwrite the GitHub version", "commit"), ("Keep the GitHub version", "skip")]
+
+
+def ask_conflicts(window, api, folder, plan, conflicts, i, for_all):
+    """One quick panel per conflict; each offers "for all remaining conflicts" as well."""
+    if for_all is not None:
+        for it in conflicts[i:]:
+            it.action = for_all
+        i = len(conflicts)
+    if i >= len(conflicts):
+        return message_then_apply(window, api, folder, plan)
+    it = conflicts[i]
+    choices = conflict_choices(plan.op)
+    rows = [[label, it.path] for label, _ in choices]
+    rest = len(conflicts) - i - 1
+    if rest:
+        rows += [[label + " – for all remaining conflicts", describe(rest + 1, "file")] for label, _ in choices]
+
+    def done(index):
+        if index < 0:
+            return log(window, "%s cancelled" % OP_TITLE[plan.op])
+        label, action = choices[index % len(choices)]
+        if index >= len(choices):
+            return ask_conflicts(window, api, folder, plan, conflicts, i, action)
+        it.action = action
+        ask_conflicts(window, api, folder, plan, conflicts, i + 1, None)
+    sublime.set_timeout(lambda: window.show_quick_panel(rows, done), 150)
+
+
+def commit_items(plan):
+    """the items that end in a commit: uploads, deletions on GitHub, and "both" where the local file is the newer"""
+    return [it for it in plan.items if it.action in ("commit", "delete_remote") or (it.action == "both" and it.newer and plan.op != "download")]
+
+
+def message_then_apply(window, api, folder, plan):
+    commits = commit_items(plan)
+    if not commits:
+        return run_async(lambda: apply_plan(window, api, folder, plan, None))
+    default = default_message(commits)
+    if not setting(window, "ask_commit_message"):
+        return run_async(lambda: apply_plan(window, api, folder, plan, default))
+    # a moment later: an input panel opened in the same tick as a closing dialog loses focus at once (= cancel)
+    sublime.set_timeout(lambda: window.show_input_panel(
+        "Commit message:", default,
+        lambda msg: run_async(lambda: apply_plan(window, api, folder, plan, msg.strip() or default)),
+        None, lambda: log(window, "%s cancelled (no message)" % OP_TITLE[plan.op])), 150)
+
+
+def apply_plan(window, api, folder, plan, message):
+    """Worker thread: downloads, dated copies and local deletions first, then one commit with the uploads and the
+    deletions on GitHub. Reports only what went differently from the plan."""
+    w, state, stored = window, plan.state, plan.state["files"]
+    title = OP_TITLE[plan.op]
+    keep_backup = mode(w) != "chaos"
+    errors = []
+
+    def write_local(it, data):
+        if it.local is not None and keep_backup:
+            backup(folder, it.lp)
+        os.makedirs(os.path.dirname(it.lp), exist_ok=True)
+        with open(it.lp, "wb") as f:
+            f.write(data)
+        stored[it.path] = it.remote
+
+    for it in plan.items:
         try:
-            head = api.head()
-            remote, _ = api.tree(head)
+            if it.action == "download":
+                write_local(it, api.blob(it.remote))
+            elif it.action == "delete_local":
+                if keep_backup:
+                    backup(folder, it.lp)
+                os.remove(it.lp)
+                stored.pop(it.path, None)
+            elif it.action == "both":
+                data = api.blob(it.remote)
+                if it.newer:                                  # local is the newer: GitHub's version becomes the dated copy
+                    with open(dated_name(it.lp, api.last_commit_time(it.path) or time.time()), "wb") as f:
+                        f.write(data)
+                else:                                         # GitHub's is the newer: the local file becomes the dated copy
+                    os.replace(it.lp, dated_name(it.lp, os.path.getmtime(it.lp)))
+                    it.local = None
+                    write_local(it, data)
+        except (ApiError, OSError) as e:
+            errors.append("  %s: %s" % (it.path, e))
+    commits = commit_items(plan)
+    new_head = None
+    if commits:
+        entries = []
+        for it in commits:
+            if it.action == "delete_remote":
+                entries.append((it.path, None))
+                continue
+            try:
+                with open(it.lp, "rb") as f:
+                    data = f.read()
+                sha = api.create_blob(data)
+                if sha != it.local:
+                    raise ApiError(0, "hash mismatch (local %s, GitHub %s)" % (it.local[:7], sha[:7]), "")
+            except (ApiError, OSError) as e:
+                errors.append("  %s: %s (commit aborted, nothing was committed)" % (it.path, e))
+                entries = None
+                break
+            entries.append((it.path, sha))
+        if entries:
+            try:
+                new_head = api.commit(plan.head, plan.base_tree, entries, message)
+            except ApiError as e:
+                errors.append("  commit: %s (nothing was committed)" % e)
+            else:
+                for it in commits:
+                    if it.action == "delete_remote":
+                        stored.pop(it.path, None)
+                    else:
+                        stored[it.path] = it.local
+    if not errors:
+        state["head"] = new_head or plan.head                 # the folder now matches this head (except skipped files)
+    save_state(folder, state)
+    if errors:
+        log(w, "Error:\n" + "\n".join(errors))
+        error("%s: %s failed, see the console" % (title, describe(len(errors), "action")))
+    else:
+        log(w, "Finished" + (", committed as %s" % new_head[:7] if new_head else ""))
+    ui(sublime.status_message, "GitHub Light: %s %s" % (title.lower(), "failed" if errors else "finished"))
+
+
+def start(window, op, limit=None):
+    p = prepare(window)
+    if not p:
+        return
+    api, folder = p
+
+    def work():
+        try:
+            plan = make_plan(window, api, folder, op, limit)
         except ApiError as e:
             return error(str(e))
-        os.makedirs(folder, exist_ok=True)
-        state = load_state(folder)
-        stored = state["files"]
-        local = local_files(w, folder)
-        todo, conflicts, gone = [], [], []
-        for path, sha in sorted(remote.items()):
-            if ignored(w, path):
-                continue
-            lp = os.path.join(folder, to_local(w, path).replace("/", os.sep))
-            exists = path in local or os.path.isfile(lp)
-            if exists:
-                lh = file_hash(lp)
-                if lh == sha:
-                    stored[path] = sha                       # identical anyway: adopt
-                    continue
-                if path in stored and lh != stored[path]:
-                    conflicts.append(path)                   # changed here AND different on GitHub
-                    continue
-                if path not in stored and lh != sha:
-                    conflicts.append(path)                   # unknown local file differs from GitHub
-                    continue
-            todo.append(path)
-        for path in list(stored):
-            if path not in remote:
-                gone.append(path)
-        ui(self.decide, api, folder, head, remote, state, todo, conflicts, gone)
+        save_state(folder, plan.state)                        # adopted identical files, dropped stale entries
+        ui(review, window, api, folder, plan)
+    os.makedirs(folder, exist_ok=True)
+    started(window, OP_TITLE[op])
+    run_async(work)
 
-    def decide(self, api, folder, head, remote, state, todo, conflicts, gone):
-        overwrite = []
-        if conflicts:
-            log(self.window, "Download: %s changed locally and differ from GitHub:\n%s"
-                % (describe(len(conflicts), "file"), "\n".join("  " + p for p in conflicts)))
-            msg = ("%s changed locally and differ from GitHub:\n\n%s\n\nOverwrite the local files with the GitHub version?"
-                   % (describe(len(conflicts), "file"), short_list(conflicts)))
-            r = sublime.yes_no_cancel_dialog(msg, "Overwrite", "Skip them")
-            if r == sublime.DIALOG_CANCEL:
-                return log(self.window, "Download cancelled")
-            if r == sublime.DIALOG_YES:
-                overwrite = conflicts
-        run_async(lambda: self.write(api, folder, head, remote, state, todo + overwrite, [c for c in conflicts if c not in overwrite], gone))
 
-    def write(self, api, folder, head, remote, state, todo, skipped, gone):
-        w = self.window
-        written, failed, lines = 0, 0, []
-        for path in todo:
-            try:
-                data = api.blob(remote[path])
-                lp = os.path.join(folder, to_local(w, path).replace("/", os.sep))
-                os.makedirs(os.path.dirname(lp), exist_ok=True)
-                with open(lp, "wb") as f:
-                    f.write(data)
-            except (ApiError, OSError) as e:
-                lines.append("  %s: Error %s" % (path, e))
-                failed += 1
-                continue
-            state["files"][path] = remote[path]
-            lines.append("  %s: OK" % path)
-            written += 1
-        for path in gone:
-            del state["files"][path]
-        if not failed:
-            state["head"] = head                             # the folder now matches this head (except skipped files)
-        save_state(folder, state)
-        head_line = "Download from %s@%s: %s written%s" % (api.repo, api.branch, describe(written, "file"),
-                                                             ", %s failed" % describe(failed, "file") if failed else "")
-        if skipped:
-            lines.append("  Skipped (changed locally): " + ", ".join(skipped))
-        if gone:
-            lines.append("  Deleted on GitHub (local copies kept): " + ", ".join(gone))
-        log(w, "\n".join([head_line] + lines))
-        if failed:
-            error("%s could not be downloaded, see the output panel" % describe(failed, "file"))
-        ui(sublime.status_message, "GitHub Light: %s downloaded" % describe(written, "file"))
+def side_bar_limit(window, files=None, dirs=None):
+    """A predicate on (remote path, local path) for the files or the folder clicked in the side bar; None for the whole
+    folder. Compares local absolute paths, case-normalised (the same test is_visible uses). Returns (limit, error text)."""
+    folder = sync_folder(window)
+    if files:
+        chosen = set(os.path.normcase(os.path.normpath(f)) for f in files if f and folder and inside(folder, f) and os.path.isfile(f))
+        if not chosen:
+            return None, "The file is not inside the sync folder \"%s\"" % folder
+        return (lambda path, lp: os.path.normcase(os.path.normpath(lp)) in chosen), None
+    if dirs:
+        sub = os.path.normpath(dirs[0])
+        if not folder or not inside(folder, sub):
+            return None, "The folder is not inside the sync folder \"%s\"" % folder
+        if os.path.normcase(sub) == os.path.normcase(folder):
+            return None, None
+        prefix = os.path.normcase(sub) + os.sep
+        return (lambda path, lp: os.path.normcase(os.path.normpath(lp)).startswith(prefix)), None
+    return None, None
+
+
+def side_bar_visible(window, files=None, dirs=None):
+    # side bar: Sublime fills "files": [] / "dirs": [] with the clicked items - an EMPTY list on the other kind of item
+    folder = sync_folder(window)
+    if files is not None:
+        return bool(files) and all(inside(folder, f) for f in files)
+    if dirs is not None:
+        return bool(dirs) and all(inside(folder, d) for d in dirs)
+    return True
+
+
+class GhlSyncCommand(sublime_plugin.WindowCommand):
+    """Both directions: what changed on GitHub comes down, what changed here goes up, deletions on either side since
+    the last sync are carried over (per delete_files), conflicts are asked. From the side bar (dirs=[...]) limited
+    to that folder."""
+
+    def run(self, files=None, dirs=None):
+        limit, err = side_bar_limit(self.window, files, dirs)
+        if err:
+            return error(err)
+        start(self.window, "sync", limit)
+
+    def is_visible(self, files=None, dirs=None):
+        return side_bar_visible(self.window, files, dirs)
+
+
+class GhlDownloadCommand(sublime_plugin.WindowCommand):
+    """GitHub -> folder: changed and new files of the branch; files deleted on GitHub since the last sync per
+    delete_files; a file changed on both sides is asked for (suggested: the newer version). From the side bar
+    (files=[...] / dirs=[...]) limited to those files or that folder."""
+
+    def run(self, files=None, dirs=None):
+        limit, err = side_bar_limit(self.window, files, dirs)
+        if err:
+            return error(err)
+        start(self.window, "download", limit)
+
+    def is_visible(self, files=None, dirs=None):
+        return side_bar_visible(self.window, files, dirs)
+
+    def description(self, files=None, dirs=None):
+        # the only dynamic caption: one or several files from the side bar
+        if files is not None:
+            return "GitHub: Download File" if len(files) <= 1 else "GitHub: Download Files"
+        return None
 
 
 class GhlCommitCommand(sublime_plugin.WindowCommand):
-    """Commit the current file (scope "current"), every changed file of the folder (scope "all"), the files given
-    by the side bar (files=[...]) or the changed files below a side bar folder (dirs=[...])."""
+    """Folder -> GitHub: the current file (scope "current"), every changed file of the folder (scope "all"), the files
+    given by the side bar (files=[...]) or the files below a side bar folder (dirs=[...]), in one commit; files
+    deleted here since the last sync per delete_files; a file changed on both sides is asked for."""
 
     def run(self, scope="all", files=None, dirs=None, context=False):
-        p = prepare(self.window)
-        if not p:
-            return
-        api, folder = p
         w = self.window
-        candidates = None
         if scope == "current" and not files and not dirs:
             files = [active_file(w)]
         if files:
-            chosen = [f for f in files if f and inside(folder, f) and os.path.isfile(f)]
-            if not chosen:
-                return error("The file is not inside the sync folder \"%s\"" % folder)
+            folder = sync_folder(w)
+            chosen = [f for f in files if f and folder and inside(folder, f) and os.path.isfile(f)]
             dirty = [v for v in w.views() if v.is_dirty() and v.file_name() in chosen]
             if dirty:
                 if not sublime.ok_cancel_dialog("%s not saved. Save and commit?" % ("The file is" if len(dirty) == 1 else "%d files are" % len(dirty)), "Save and commit"):
                     return
                 for v in dirty:
                     v.run_command("save")
-            candidates = {to_remote(w, os.path.relpath(f, folder)): f for f in chosen}
-        elif dirs:
-            sub = os.path.normpath(dirs[0])
-            if not inside(folder, sub):
-                return error("The folder is not inside the sync folder \"%s\"" % folder)
-            candidates = {r: f for r, f in local_files(w, folder).items() if inside(sub, f)}
-        run_async(lambda: self.work(api, folder, candidates))
+        limit, err = side_bar_limit(w, files, dirs)
+        if err:
+            return error(err)
+        start(w, "commit", limit)
 
     def is_enabled(self, scope="all", files=None, dirs=None, context=False):
         if scope == "current" and not files and not dirs:
@@ -514,156 +992,34 @@ class GhlCommitCommand(sublime_plugin.WindowCommand):
         return True
 
     def description(self, scope="all", files=None, dirs=None, context=False):
-        # right-click menus say where the commit goes; the menu bar entries sit in the GitHub Light submenu already
+        # the only dynamic caption (one or several files from the side bar); static captions are in the menu files
         if files is not None:
-            return "Commit File to GitHub\u2026" if len(files) <= 1 else "Commit Files to GitHub\u2026"
-        if dirs is not None:
-            return "Commit Folder to GitHub\u2026"
-        if context:
-            return "Commit File to GitHub\u2026"
-        return "Commit Current File\u2026" if scope == "current" else "Commit All\u2026"
+            return "GitHub: Commit File" if len(files) <= 1 else "GitHub: Commit Files"
+        return None
 
-    def work(self, api, folder, candidates):
-        w = self.window
-        state = load_state(folder)
-        stored = state["files"]
-        if candidates is None:
-            candidates = local_files(w, folder)
-        try:
-            head = api.head()
-            remote, base_tree = api.tree(head)
-        except ApiError as e:
-            return error(str(e))
-        changed, conflicts = [], []
-        for path, lp in sorted(candidates.items()):
-            if ignored(w, path):
-                continue
-            lh = file_hash(lp)
-            rh = remote.get(path)
-            if lh == rh:
-                stored[path] = lh                            # already on GitHub like this
-                continue
-            if path in stored:
-                if rh != stored[path]:
-                    conflicts.append((path, lp, lh, False))  # GitHub moved on since the last sync
-                    continue
-            elif rh is not None:
-                conflicts.append((path, lp, lh, False))      # never synced, but exists on GitHub with other content
-                continue
-            changed.append((path, lp, lh, rh is None))       # new on GitHub when it has no blob there
-        save_state(folder, state)
-        ui(self.decide, api, folder, head, base_tree, state, changed, conflicts)
 
-    def decide(self, api, folder, head, base_tree, state, changed, conflicts):
-        w = self.window
-        if not changed and not conflicts:
-            log(w, "Commit: nothing changed")
-            return sublime.status_message("GitHub Light: nothing to commit")
-        names = [p + "   \u2190 changed on GitHub" for p, _, _, _ in conflicts] + [p + ("   (new)" if new else "") for p, _, _, new in changed]
-        listing = short_list(names)
-        total = len(changed) + len(conflicts)
-        log(w, "Commit: %s to %s@%s%s\n%s" % (describe(total, "file"), api.repo, api.branch,
-            " (%s changed on GitHub since the last sync)" % describe(len(conflicts), "file") if conflicts else "",
-            "\n".join("  " + n for n in names)))
-        if conflicts:
-            msg = ("Commit %s to %s@%s?\n\n%s\n\n%s changed on GitHub since your last sync; committing overwrites "
-                   "the GitHub version with yours." % (describe(total, "file"), api.repo, api.branch, listing, describe(len(conflicts), "file")))
-            r = sublime.yes_no_cancel_dialog(msg, "Commit", "Open on GitHub")
-            if r == sublime.DIALOG_NO:
-                webbrowser.open(compare_url(api, state))
-            if r != sublime.DIALOG_YES:
-                return log(w, "Commit cancelled: changed on GitHub: " + ", ".join(p for p, _, _, _ in conflicts))
-            log(w, "Commit: overwriting the GitHub version of " + ", ".join(p for p, _, _, _ in conflicts))
-            changed = changed + conflicts
-        elif setting(w, "confirm_commit"):
-            if not sublime.ok_cancel_dialog("%s changed since your last commit to %s@%s. Commit now?\n\n%s" % (describe(total, "file"), api.repo, api.branch, listing), "Commit"):
-                return log(w, "Commit cancelled")
-        default = default_message(changed)
-        if not setting(w, "ask_commit_message"):
-            return run_async(lambda: self.push(api, folder, head, base_tree, state, changed, default))
-        # a moment later: an input panel opened in the same tick as a closing dialog loses focus at once (= cancel)
-        sublime.set_timeout(lambda: w.show_input_panel(
-            "Commit message:", default,
-            lambda msg: run_async(lambda: self.push(api, folder, head, base_tree, state, changed, msg.strip() or default)),
-            None, lambda: log(w, "Commit cancelled (no message)")), 150)
-
-    def push(self, api, folder, head, base_tree, state, changed, message):
-        w = self.window
-        entries, lines = [], []
-        log(w, "Commit to %s@%s: %s" % (api.repo, api.branch, message))
-        for path, lp, lh, _ in changed:
-            try:
-                with open(lp, "rb") as f:
-                    data = f.read()
-                sha = api.create_blob(data)
-                if sha != lh:
-                    raise ApiError(0, "hash mismatch (local %s, GitHub %s)" % (lh[:7], sha[:7]), "")
-            except (ApiError, OSError) as e:
-                log(w, "  %s: Error %s\nCommit aborted, nothing was committed." % (path, e))
-                return error("%s could not be uploaded: %s" % (path, e))
-            log(w, "  - %s: OK" % path)
-            entries.append((path, sha))
-        try:
-            new = api.commit(head, base_tree, entries, message)
-        except ApiError as e:
-            log(w, "  Error %s\nCommit aborted, nothing was committed." % e)
-            return error(str(e))
-        for path, _, lh, _ in changed:
-            state["files"][path] = lh
-        state["head"] = new
-        save_state(folder, state)
-        log(w, "  Committed as %s" % new[:7])
-        ui(sublime.status_message, "GitHub Light: committed %s (%s)" % (describe(len(entries), "file"), new[:7]))
 
 
 class GhlStatusCommand(sublime_plugin.WindowCommand):
-    """List what differs between the folder, the last sync and the branch."""
+    """What a Sync would do, in the same categories, without doing anything."""
 
     def run(self):
         p = prepare(self.window)
         if not p:
             return
         api, folder = p
-        run_async(lambda: self.work(api, folder))
 
-    def work(self, api, folder):
-        w = self.window
-        state = load_state(folder)
-        stored = state["files"]
-        local = local_files(w, folder)
-        try:
-            head = api.head()
-            remote, _ = api.tree(head)
-        except ApiError as e:
-            return error(str(e))
-        changed, conflicts, untracked, newremote, gone, same = [], [], [], [], [], 0
-        for path, lp in sorted(local.items()):
-            lh = file_hash(lp)
-            rh = remote.get(path)
-            if lh == rh:
-                same += 1
-                continue
-            if path not in stored:
-                (conflicts if rh is not None else untracked).append(path)
-            elif rh != stored[path]:
-                conflicts.append(path)
-            else:
-                changed.append(path)
-        for path in sorted(remote):
-            if ignored(w, path):
-                continue
-            if path not in local:
-                (gone if path in stored else newremote).append(path)
-        lines = ["Status %s@%s (head %s%s)" % (api.repo, api.branch, head[:7],
-                 "" if head == state.get("head") else ", last sync " + (state.get("head", "")[:7] or "never"))]
-        lines.append("  %s unchanged" % describe(same, "file"))
-        for title, items in (("To commit (changed locally)", changed), ("Conflict (changed on GitHub and locally)", conflicts),
-                             ("Untracked (new local file, not on GitHub)", untracked), ("New on GitHub (download)", newremote),
-                             ("Missing locally (on GitHub, deleted or never downloaded)", gone)):
-            if items:
-                lines.append("  %s:" % title)
-                lines += ["    " + p for p in items]
-        log(w, "\n".join(lines))
+        def work():
+            try:
+                plan = make_plan(self.window, api, folder, "sync")
+            except ApiError as e:
+                return error(str(e))
+            plan.op = "status"
+            head_note = "" if plan.head == plan.state.get("head") else "   (last sync %s)" % (plan.state.get("head", "")[:7] or "never")
+            first, _, rest = plan_text(api, plan).partition("\n")
+            log(self.window, first + head_note + ("\n" + rest if rest else ""))
+        started(self.window, "Status")
+        run_async(work)
 
 
 class GhlOpenOnlineCommand(sublime_plugin.WindowCommand):
@@ -692,6 +1048,59 @@ class GhlOpenOnlineCommand(sublime_plugin.WindowCommand):
     def is_visible(self, kind="blob", files=None, context=False):
         if files is not None or context:
             return self.is_enabled(kind, files)
+        return True
+
+
+class GhlDiffCommand(sublime_plugin.WindowCommand):
+    """The difference between the local file (current or clicked) and its version on the branch head, as a unified diff
+    in a scratch tab."""
+
+    def run(self, files=None, context=False):
+        p = prepare(self.window)
+        if not p:
+            return
+        api, folder = p
+        v = self.window.active_view()
+        fn = files[0] if files else (v.file_name() if v else None)
+        if not inside(folder, fn) or not os.path.isfile(fn):
+            return error("The file is not inside the sync folder \"%s\"" % folder)
+        path = to_remote(self.window, os.path.relpath(fn, folder))
+        started(self.window, "Diff")
+        run_async(lambda: self.work(api, folder, fn, path))
+
+    def work(self, api, folder, fn, path):
+        try:
+            head = api.head()
+            remote, _ = api.tree(head)
+            sha = remote.get(path)
+            theirs = api.blob(sha).decode("utf-8", "replace").splitlines() if sha else []
+        except ApiError as e:
+            return error(str(e))
+        with open(fn, "rb") as f:
+            mine = f.read().decode("utf-8", "replace").splitlines()
+        import difflib
+        diff = list(difflib.unified_diff(theirs, mine, "GitHub: %s%s" % (path, "" if sha else " (not on GitHub)"), "local: " + path, lineterm=""))
+        text = "\n".join(diff) if diff else "No difference: %s is the same locally and on GitHub" % path
+        ui(self.show, path, text)
+
+    def show(self, path, text):
+        w = self.window
+        view = w.new_file()
+        view.set_name("Diff " + os.path.basename(path))
+        view.set_scratch(True)
+        view.assign_syntax("Packages/Diff/Diff.sublime-syntax")
+        view.run_command("append", {"characters": text + "\n"})
+        view.set_read_only(True)
+        log(w, "Diff %s: %s" % (path, "no difference" if text.startswith("No difference") else "shown in a tab"))
+
+    def is_enabled(self, files=None, context=False):
+        if files is not None:
+            return len(files) == 1 and inside(sync_folder(self.window), files[0])
+        return inside(sync_folder(self.window), active_file(self.window))
+
+    def is_visible(self, files=None, context=False):
+        if files is not None or context:
+            return self.is_enabled(files)
         return True
 
 
@@ -769,6 +1178,146 @@ def commit_files(window, api, folder, paths, message):
     return new
 
 
+class GhlSettingsCommand(sublime_plugin.WindowCommand):
+    """Settings: default settings (read-only) | user settings | project file, when a project is open; else Sublime's two panes."""
+
+    def run(self):
+        open_settings(self.window, "GitHub Light", SETTINGS_FILE)
+
+
+def open_settings(window, package, settings_file):
+    base = "${packages}/%s/%s" % (package, settings_file)
+    project = window.project_file_name()
+    if not project:
+        return window.run_command("edit_settings", {"base_file": base, "default": "{\n\t$0\n}\n"})
+    user = os.path.join(sublime.packages_path(), "User", settings_file)
+    if not os.path.isfile(user):
+        with open(user, "w", encoding="utf-8") as f:
+            f.write("{\n}\n")
+    default = os.path.join(sublime.packages_path(), package, settings_file)
+    if not os.path.isfile(default):                   # installed as .sublime-package: unpack the default file into a view
+        sublime.run_command("new_window")
+        w = sublime.active_window()
+        w.set_layout({"cols": [0.0, 0.34, 0.67, 1.0], "rows": [0.0, 1.0], "cells": [[0, 0, 1, 1], [1, 0, 2, 1], [2, 0, 3, 1]]})
+        v = w.new_file()
+        v.set_name(settings_file + " (default)")
+        v.set_scratch(True)
+        v.run_command("append", {"characters": sublime.load_resource("Packages/%s/%s" % (package, settings_file))})
+        v.assign_syntax("Packages/JavaScript/JSON.sublime-syntax")
+        v.set_read_only(True)
+        w.set_view_index(v, 0, 0)
+        w.focus_group(1)
+        w.open_file(user)
+        w.focus_group(2)
+        w.open_file(project)
+        return
+    sublime.run_command("new_window")
+    w = sublime.active_window()
+    w.set_layout({"cols": [0.0, 0.34, 0.67, 1.0], "rows": [0.0, 1.0], "cells": [[0, 0, 1, 1], [1, 0, 2, 1], [2, 0, 3, 1]]})
+    w.focus_group(0)
+    v = w.open_file(default)
+    make_read_only(v)
+    w.focus_group(1)
+    w.open_file(user)
+    w.focus_group(2)
+    w.open_file(project)
+
+
+def make_read_only(view, tries=50):
+    if view.is_loading():
+        if tries > 0:
+            sublime.set_timeout(lambda: make_read_only(view, tries - 1), 50)
+        return
+    view.set_read_only(True)
+
+
+
+class GhlNewProjectCommand(sublime_plugin.WindowCommand):
+    """Side bar, on a folder: a sub-folder with a project file for GitHub Light, opened with its settings. The repository
+    on GitHub is not created."""
+
+    def run(self, dirs=None):
+        if not dirs:
+            return
+        parent = dirs[0]
+        self.window.show_input_panel("Name of the new GitHub project (sub-folder of %s):" % (os.path.basename(parent) or parent), "",
+                                     lambda name: self.create(parent, name), None, None)
+
+    def create(self, parent, name):
+        name = name.strip()
+        if not name or re.search(r'[\\/:*?"<>|]', name):
+            return sublime.error_message("GitHub Light: \"%s\" is not a valid folder name" % name)
+        folder = os.path.join(parent, name)
+        project = os.path.join(folder, name + ".sublime-project")
+        if os.path.exists(project):
+            return sublime.error_message("GitHub Light: %s exists already" % project)
+        if not os.path.isdir(folder):
+            os.makedirs(folder)
+        with open(project, "w", encoding="utf-8") as f:
+            f.write(PROJECT_TEMPLATE)
+        sublime.run_command("new_window")
+        w = sublime.active_window()
+        w.run_command("open_project_or_workspace", {"file": project})
+
+        def settings(tries=20):
+            if not w.project_file_name():
+                if tries > 0:
+                    sublime.set_timeout(lambda: settings(tries - 1), 100)
+                return
+            w.run_command("ghl_settings")
+        sublime.set_timeout(settings, 200)
+
+    def is_visible(self, dirs=None):
+        return bool(dirs) and len(dirs) == 1 and os.path.isdir(dirs[0])
+
+
+PROJECT_TEMPLATE = """{
+    "folders":
+    [
+        { "path": "." }
+    ],
+    "settings":
+    {
+        "github_light":
+        {
+            // Settings of GitHub Light for this project. Any key of the package settings (left column of
+            // Tools > GitHub Light > Settings) can be set here and overrides it for this project - except "token".
+            "repository": "owner/name",
+        }
+    }
+}
+"""
+
+_pending_release = None      # the release waiting for its notes tab (one at a time)
+
+
+class GhlReleaseNotesDoneCommand(sublime_plugin.TextCommand):
+    """Ctrl+Enter in the release notes tab: take the text and create the release."""
+
+    def run(self, edit):
+        global _pending_release
+        p = _pending_release
+        if not p or p["view"] != self.view.id():
+            return
+        notes = self.view.substr(sublime.Region(0, self.view.size()))
+        _pending_release = None
+        self.view.set_scratch(True)
+        self.view.close()
+        run_async(lambda: p["cmd"].create(p["api"], p["prefix"], p["version"], p["tag"], p["title"], notes))
+
+    def is_enabled(self):
+        return bool(_pending_release) and _pending_release["view"] == self.view.id()
+
+
+class GhlReleaseNotesListener(sublime_plugin.EventListener):
+    def on_pre_close(self, view):
+        global _pending_release
+        if _pending_release and _pending_release["view"] == view.id():
+            tag = _pending_release["tag"]
+            _pending_release = None
+            log(view.window(), "Release %s cancelled (notes tab closed)" % tag)
+
+
 class GhlReleaseCommand(sublime_plugin.WindowCommand):
     """Create a tag and a release on the branch head; the next version is chosen as patch, minor or major."""
 
@@ -784,8 +1333,12 @@ class GhlReleaseCommand(sublime_plugin.WindowCommand):
             if self.notes is None:
                 return error("No \"Unreleased\" section found in %s (expected a heading \"## [Unreleased]\")" % os.path.join(folder, CHANGELOG))
             if not self.notes:
-                return error("The \"Unreleased\" section of %s is empty - nothing to release" % CHANGELOG)
-            log(self.window, "Release notes from %s:\n%s" % (CHANGELOG, "\n".join("  " + l for l in self.notes.splitlines())))
+                if not sublime.ok_cancel_dialog("The \"Unreleased\" section of %s is empty.\n\nRelease anyway (empty notes%s)?"
+                                                % (CHANGELOG, "" if ask_mode(self.window) != "never" else ", the section is closed empty"), "Release anyway"):
+                    return log(self.window, "Release cancelled: the Unreleased section of %s is empty" % CHANGELOG)
+            else:
+                log(self.window, "Release notes from %s:\n%s" % (CHANGELOG, "\n".join("  " + l for l in self.notes.splitlines())))
+        started(self.window, "Create Release")
         run_async(lambda: self.work(api))
 
     def work(self, api):
@@ -811,16 +1364,51 @@ class GhlReleaseCommand(sublime_plugin.WindowCommand):
                 return
             tag = items[i][0]
             version = tuple(int(x) for x in options[i][0].split("."))
-            if not setting(self.window, "ask_release_details"):
-                return run_async(lambda: self.create(api, prefix, version, tag, tag, None))
-            sublime.set_timeout(lambda: self.window.show_input_panel(
-                "Release title:", tag, lambda title: self.body(api, prefix, version, tag, title), None, None), 150)
+            label = setting(self.window, "release_label") or "ask"
+            if label in ("latest", "pre", "none"):
+                return self.after_label(api, prefix, version, tag, label)
+            labels = [["Latest release", "Marked as the latest release of the repository"],
+                      ["Pre-release", "Marked as a pre-release; the latest release stays as it is"],
+                      ["No label", "Neither latest nor pre-release"]]
+            sublime.set_timeout(lambda: self.window.show_quick_panel(
+                labels, lambda j: self.after_label(api, prefix, version, tag, ("latest", "pre", "none")[j]) if j >= 0 else None), 150)
         self.window.show_quick_panel(items, picked)
 
+    def after_label(self, api, prefix, version, tag, label):
+        self.label = label
+        mode = ask_mode(self.window)
+        if mode == "never":
+            return run_async(lambda: self.create(api, prefix, version, tag, tag, None))
+        if mode == "notes":
+            return sublime.set_timeout(lambda: self.body(api, prefix, version, tag, tag), 150)
+        sublime.set_timeout(lambda: self.window.show_input_panel(
+            "Release title:", tag, lambda title: self.body(api, prefix, version, tag, title), None, None), 150)
+
     def body(self, api, prefix, version, tag, title):
-        # the changelog section, when there is one, is the suggested text (Enter confirms, Shift+Enter adds a line)
-        self.window.show_input_panel("Release notes%s:" % ("" if self.notes is not None else " (optional)"), self.notes or "",
-                                     lambda notes: run_async(lambda: self.create(api, prefix, version, tag, title, notes)), None, None)
+        """The notes are edited in a scratch tab (Markdown, word wrap): Ctrl+Enter creates the release, closing the tab cancels."""
+        global _pending_release
+        v = self.window.new_file()
+        v.set_scratch(True)
+        v.set_name("Release notes %s" % tag)
+        v.assign_syntax("Packages/Markdown/Markdown.sublime-syntax")
+        v.settings().set("word_wrap", True)
+        v.settings().set("ghl_release_notes", True)
+        v.run_command("append", {"characters": self.notes or ""})
+        _pending_release = {"view": v.id(), "cmd": self, "api": api, "prefix": prefix, "version": version, "tag": tag, "title": title}
+        key = "\u2318" if sublime.platform() == "osx" else "Ctrl"
+        html = ('<body id="ghl-release"><style>body {padding: 0.3rem 0.6rem; margin-bottom: 0.4rem; background-color: color(var(--background) blend(var(--foreground) 92%%)); '
+                'border-left: 0.25rem solid var(--bluish);} a {text-decoration: none;} .k {color: var(--foreground); opacity: 0.6;}</style>'
+                '<b>Release notes for %s</b> &nbsp; <a href="done">Create release</a> &nbsp;|&nbsp; <a href="cancel">Cancel</a> '
+                '&nbsp; <span class="k">%s+Enter or %s+S creates the release, closing the tab cancels</span></body>' % (tag, key, key))
+        v.add_phantom("ghl_release", sublime.Region(0, 0), html, sublime.LAYOUT_BLOCK, on_navigate=lambda href: self.phantom_click(v, href))
+        sublime.status_message("GitHub Light: edit the release notes, then %s+Enter or %s+S to create %s (close the tab to cancel)" % (key, key, tag))
+        log(self.window, "Release %s: edit the notes in the tab \"%s\", then %s+Enter or %s+S creates the release; close the tab to cancel." % (tag, v.name(), key, key))
+
+    def phantom_click(self, v, href):
+        if href == "done":
+            v.run_command("ghl_release_notes_done")
+        elif href == "cancel":
+            v.close()
 
     def create(self, api, prefix, version, tag, title, entered):
         """entered: the text of the notes panel, or None when the panel was not shown.
@@ -834,20 +1422,23 @@ class GhlReleaseCommand(sublime_plugin.WindowCommand):
             # the changelog and the Package Control message file must be in the release: commit them first
             paths = []
             if self.notes is not None:
-                if not notes:
-                    return error("Empty release notes - the release was not created")
+                if not notes and section:
+                    # the prefilled notes were deleted in the tab: ask, do not just drop the section text
+                    if not ui_confirm("The release notes are empty (the changelog section was deleted in the tab).\n\nRelease anyway?", "Release anyway"):
+                        return log(self.window, "Release cancelled: empty notes")
                 paths.append(release_changelog(self.folder, tag, notes if notes != section else None))
             if setting(self.window, "sublime_version_files"):
                 paths += write_version_message(self.folder, vstr, tag, notes)
             if paths:
                 commit_files(self.window, api, self.folder, paths, "Release %s" % tag)
-            rel = api.release(tag, title.strip() or tag, notes)
+            rel = api.release(tag, title.strip() or tag, notes, getattr(self, "label", "latest"))
             sha = api.head()
         except ApiError as e:
             return error(str(e))
         except OSError as e:
             return error("Could not write the release files: %s" % e)
-        log(self.window, "Release %s created: %s" % (tag, rel.get("html_url", "")))
+        label = getattr(self, "label", "latest")
+        log(self.window, "Release %s created%s: %s" % (tag, {"pre": " (pre-release)", "none": " (no label)"}.get(label, ""), rel.get("html_url", "")))
         ui(sublime.status_message, "GitHub Light: release %s created" % tag)
         mode = setting(self.window, "moving_tag")
         if mode == "ask":
@@ -899,6 +1490,7 @@ class GhlMoveTagCommand(sublime_plugin.WindowCommand):
         if not p:
             return
         api, folder = p
+        started(self.window, "Move Tag")
         run_async(lambda: self.work(api))
 
     def work(self, api):

@@ -1,112 +1,238 @@
 # GitHub Light
 
-A small GitHub client for Sublime Text that needs **no git installation**. It keeps one folder of your project in sync with one branch of one GitHub repository through GitHub's REST API: download the files, commit what you changed, look at a file's history or blame in the browser, create a release. Nothing more — no branches, no merging, no history on your disk.
+A small GitHub client for Sublime Text 4 that needs **no git installation**. It keeps one folder of your Sublime project in sync with one branch of one GitHub repository through GitHub's REST API. Obviously meant for small projects of any sorts, where git would be a burden. Features:
 
-Meant for people who keep a few files on GitHub (a wiki, a package, documentation) and do not want to learn git for it. If you need branches and merges, use git.
+* Sync, download or commit one or all files
+* Create a release
+* View a file's history or blame in the browser
+* Nothing more — no branches, no merging, no history on your disk (but backups for deleted files).
+
+Repository: https://github.com/wunditta/sublime-github-light
 
 ## How it works
 
-GitHub stores no modification times, so the package compares **content hashes**: for every file it computes git's blob hash (`sha1("blob <size>\0" + content)`) locally and compares it with the hashes of the branch, which one request to the API returns for all files at once. The hashes of your last sync are kept in `.github-sync-hash.json` inside the folder; this is how the package knows whether a file changed on your side, on GitHub, or on both. A commit is refused when GitHub changed a file since your last sync, so nothing is overwritten unseen.
+The package compares **content hashes**: for every file it computes git's blob hash (`sha1("blob <size>\0" + content)`) locally and compares it with the hashes of the branch. The hashes of your last sync are kept in the local file `.github-sync-hash.json` inside the folder. This is how the package knows whether a file changed on your side, on GitHub, or on both. If anything would be overwritten, which should not happen without your consent, a confirmation is required.
 
-Commits are made directly on the branch with the Git Data API (blobs → tree → commit → ref), one commit for all files you commit together, with the message you type. They appear on GitHub like any other commit, authored by the owner of the token.
+Commits are made directly on the branch with the Git Data API (blobs → tree → commit → ref), one commit for all files you commit together. They appear on GitHub like any other commit, authored by the owner of the token.
 
 ## Setup
 
-1. **Token.** On GitHub: Settings › Developer settings › Personal access tokens › Fine-grained tokens › Generate new token. Resource owner: you; repository access: only the repository you sync; permissions: *Contents: Read and write* (nothing else). Copy the token.
-2. **User settings.** Preferences › Package Settings › GitHub Light › Settings, right-hand side:
-   ```json
+1. Generate a repo access **Token**. On GitHub user navigation menu (top right):
+    * Settings › Credentials › Fine-grained personal access tokens › Generate new token:
+        * Resource owner: you
+        * Repository access: whatever suits you
+        * Permissions: Add > **Contents**, then change to **Read and write** (nothing else).
+    * Copy the token (and save it somewhere really safe immediately, as you cannot get the token string again later).
+2. For a new project create a folder on your local machine where you want to save the files for GitHub
+3. Save the Sublime project (Project > Save Project as...). Recommended is to save it to the same folder you just added.
+4. Add the folder to the project (Project > Add Folders to Project...)
+5. Edit settings: Preferences > Package Settings > GitHub Light > Settings. You will see a 3 column layout:
+    * Default settings (left; read only)
+    * User settings (middle): copy from default and edit your settings, which should be applied to all projects
+    * Project settings (right; same as Project > Edit Project): copy from default and edit your settings, which should be project specific
+2. **User settings**: Settings apply to all projects. Put the token here and not in the project settings (double security: by default it does not matter, as the setting "ignore" prevents the project setting file to be uploaded to GitHub anyways; but if you change "ignore" in the wrong way, your access token would be published to GitHub with the file; so put it here):
+   ```jsonc
    {
        "token": "github_pat_…"
    }
    ```
-   The token stays in your User settings and never in a project file.
-3. **Project settings.** Project › Edit Project:
-   ```json
+3. **Project settings**: Project specific settings are typically only the repository.
+   ```jsonc
    {
        "folders": [ { "path": "." } ],
        "settings": {
            "github_light": {
-               "repository": "owner/name"
+               "repository": "owner/repo_name"
            }
        }
    }
    ```
    The first folder of the project is the working copy (set `folder` for another one, relative to the project file). It may be empty; the first Download fills it.
-4. Tools › GitHub Light › **Download**.
+4. Tools › GitHub Light › **Sync** (or **Download**).
 
 ## Commands
 
-All in Tools › GitHub Light and in the Command Palette as "GitHub Light: …". Entries that need a file in the sync folder are greyed out while another file is active. The same commands are in the text area's right-click menu (View / Blame / History Online, Commit This File) and in the side bar's right-click menu (Commit This File on a file, Commit All on the sync folder, Commit Folder on a subfolder, History Online) — there they appear only for files and folders inside the sync folder.
+* **Tools › GitHub Light**
+* Command Palette as "GitHub Light: …".
+* Context menu: commands for the current file (View / Blame / History; Diff File; Commit File)
+* Side bar (right-click): limited to the sync folder and below:
+    * On a folder: Sync Folder, Download Folder, Commit Folder
+    * On files: Download File(s), Commit File(s), History, Diff File
+    * New GitHub Project below... (on any folder, also outside the project): Asks for a name, creates the folder and the project file and opens the settings window.
 
 | Command | What it does |
 |---|---|
-| **Download** | Fetches the branch and writes every file that changed on GitHub since your last sync into the folder. A file that you changed locally *and* that differs on GitHub is listed first: Overwrite, Skip them, or Cancel. Files deleted on GitHub are reported, the local copies stay. |
-| **Commit Current File** | Commits the file in the active view if it changed (asks to save it first if needed). |
-| **Commit All** | Commits every changed and every new file of the folder in one commit. With `confirm_commit` the list is shown first; then you type the message (unless `ask_commit_message` is off). The output panel lists every file with `OK` or the error. |
-| **Status** | Lists in the output panel what is unchanged, to commit, in conflict, untracked, new on GitHub, or missing locally. Reads from GitHub, changes nothing. |
+| **Sync** | Syncs in both directions by comparing the hash patterns since the last sync, so a conflict (both sides changed) or file deletions (an already synced file is missing) can be detected reliably. If there is no hash pattern this is not possible and you need to decide which side prevails (either for all files, or per file). Note: if or when a confirmation dialog is shown, and how unclear situations should be resolved, depend on the settings `conflict_and_delete_files` and `confirm_file_transfer`, but regardless of the chosen settings, no data can be lost silently (also see *Categories, conflicts and the confirmation dialog*). |
+| **Download** | Works similar to "Sync" but only downloads files from GitHub to the sync folder with the option to forcefully overwrite the local files (pressing "OK" downloads, regardless of which one is newer, or if there is an unresolved conflict (however, setting `conflict_and_delete_files` is still honored); for a safer way use "As suggested"). |
+| **Commit All / Current File** | Commits the current file or all files in the sync folder in the same way as download works (you will be asked to save unsaved files first). Depending on setting `ask_commit_message` you may be asked to type one. |
+| **Status** | Is basically a simulated Sync and lists the files and their status in the output panel (as if a sync would be performed). |
 | **View Online** / **Blame Online** | Opens the current file on GitHub at the line the cursor is on. |
 | **History Online** | Opens the commit history of the current file on GitHub. |
-| **Create Release** | Reads the latest version tag of the repository and offers the next **patch**, **minor** and **major** version (semantic versioning: patch = backward compatible bug fixes, minor = new functionality, major = incompatible changes); `1.0.0` when there is no tag yet. Then title and optional notes (or the notes from `CHANGELOG.md`, see below), and the tag and release are created on the branch head. Afterwards the moving tag is moved, see below. |
-| **Move Tag** | Creates a tag or moves an existing one to the current branch head. The name is asked for, prefilled per `moving_tag`. |
+| **Diff File** | Shows the difference between the current (or clicked) file and its version on the branch head as a unified diff in a scratch tab. GitHub itself can only show its own version of a file, never the difference to your copy, so this is the place to look at a conflict or an "(older)" file before deciding. |
+| **Create Release** | Reads the latest version tag of the repository and offers three defaults (according to semantic versioning, each increasing one of "patch" (bug, vx.x.2), "minor" (compatible change, vx.2.0), or "major" (incompatible change, v2.0.0); starting with "v1.0.0"). Then the title (input panel) and the notes, which open in an editor tab with Markdown highlighting and word wrap (if you maintain a CHANGELOG.md file it is prefilled with the text from it; see below *Release notes from the changelog*). The top of the panel shows how to confirm the release (button, **Ctrl+S**, etc). Tag and release are created on the branch head, marked according to the setting `release_label` (latest / pre-release / none). Note: publishing on the marketplace cannot be done that way, so you would need to enable this manually (only once, further releases keep it). |
+| **Move Tag** | Creates or updates a pointer tag to the current branch head (see below *Moving Tag*). The name is asked for, prefilled per `moving_tag`. |
 
-### When a commit is refused
+### Categories, conflicts and the confirmation dialog
 
-"… changed on GitHub since your last sync" means somebody (or an action) committed to the file after you last downloaded it. The commit dialog then marks those files with "← changed on GitHub" and offers three ways out: *Commit* overwrites the GitHub version with yours (the other change is still in the history on GitHub, nothing is lost for good); *Open on GitHub* shows the compare page from your last sync to the current branch head, so you can see what changed, and cancels; *Cancel*. This dialog appears even with `confirm_commit` off. After a look at the changes, either Download (your local change is kept if it does not conflict, otherwise you are asked) and commit again, or copy your change into the downloaded version.
+Before any file transfer is done the actions are planned and asked for confirmation (if `confirm_file_transfer` is true, or if unresolvable situations). This is done by comparing each file with a hash token from the last sync (to clearly identify changes on either side and deletions) or by comparing the modification dates. The dialog shows all existing **categories** with the number of concerned files. The console panel shows this for each individual file and also suggests an action if the situation is unclear. The confirmation dialog offers three options:
+* "OK": Download or upload forcefully (but still honoring the setting of `conflict_and_delete_files`). For syncing each individual conflict needs to be resolved manually.
+* "As Suggested" (only present if suggestions available): Follows the suggestions as shown in the console.
+* "Cancel"
+
+The **categories** are:
+* Unchanged
+* Download / Commit: updates an existing file
+* Download (new) / Commit (new): adds a non-existing file
+* Conflict: changed on both sides (suggestion depends on `conflict_and_delete_files`)
+* Unknown: exist on both sides but never synced (so no hash token), thus an unknown situation (handled like a conflict)
+* Both (new): like Unknown, but `conflict_and_delete_files` specifies to keep both
+* Delete local / Delete GitHub: will be deleted, as it was deleted on the other side (clearly identified with the hash tokens)
+* Keep local (prefs) / Keep GitHub (prefs): like Delete above, but the preferences forbid deletions (setting `conflict_and_delete_files`)
+* Commit (older) / Download (older): only for Commit or Download, when the own side is the older one (GitHub changed the file and you did not, or the other way round); suggested is to keep the newer version, so nothing is transferred, but "OK" in the confirmation dialog overwrites it anyway (with backup)
+
+The hash file (`.github-sync-hash.json`) and the `_backup` folder are never synced according to setting "ignore".
+
+**Backups**: A local file is copied into `_backup` before it is deleted or overwritten (unless setting `conflict_and_delete_files` is "chaos"), and on GitHub the history keeps every version.
 
 ### Moving tags
 
-A release tag (`v1.2.3`) never moves. A *moving tag* is a second tag such as `v1` or `v1.2` that is re-pointed to every new release of that line; whoever references it always gets the latest compatible version without changing anything. You need one mainly when you publish a **GitHub Action**, which users reference exactly this way (`uses: owner/action@v1`); a few projects also offer a `latest` tag in the same spirit. Package Control and most other package managers read the version tags themselves, so for a Sublime package or an ordinary repository set `moving_tag` to `""` and forget about it. Create Release can move such a tag for you, controlled by the `moving_tag` setting: `"ask"` offers the major tag (`v1`), the minor tag (`v1.2`) or none after each release; `"major"` or `"minor"` move that tag without asking; any other text is a fixed tag name that follows every release; `""` never moves anything. Move Tag does the same by hand for the current branch head.
+A release tag should follow the semantic versioning (`v1.2.3`). A *moving tag* is a second tag such as `v1` or `v1.2` that is re-pointed to every new release. A reference to the repo with the moving tag always gets the latest compatible version without changing anything. This is especially common for **GitHub Actions**, which users reference exactly this way (`uses: owner/action@v1`). Some projects offer a `latest` tag in the same spirit. Package Control and most other package managers read the version tags themselves, so for a Sublime package or an ordinary repository you may not need this function (set `moving_tag` to "").
 
 ### Release notes from the changelog
 
-Keeping a `CHANGELOG.md` in the [Keep a Changelog](https://keepachangelog.com) form solves the "which version will this be?" problem: changes are written under `## [Unreleased]` as they happen, and the version is decided when releasing — from what the section holds. With `release_notes_from_changelog: true` Create Release does the mechanical part: it shows the Unreleased section in the output panel, lets you choose the version, renames the section to `## [v1.2.0] - <today>` (the tag name) with a fresh empty `## [Unreleased]` above, commits the file ("Release v1.2.0") and creates the release with the section as its notes, so the changelog, the release page and (with `sublime_version_files`) Package Control's `messages/v1.2.0.txt` carry the same text (its key in `messages.json` is the bare `1.2.0`, as Package Control requires). With `ask_release_details` the section is the suggested text in the notes panel (Enter confirms, Shift+Enter adds a line), and what you confirm is written to all three places. An empty Unreleased section stops the release.
+This package supports a `CHANGELOG.md` in the ["Keep a Changelog"](https://keepachangelog.com) form. The changes, which are yet unreleased, are written under section `## [Unreleased]` (tied to heading level 2). When `release_notes_from_changelog` is enabled, the release notes are taken from this section (as suggestion). After the release, the section is automatically renamed to `## [vx.y.z] - <today>` and adds a new heading `## [Unreleased]` above. If this section is not available a reminder dialog is shown.
+
+When `sublime_version_files` is enabled, the same information is written to Package Control's `messages/v1.2.0.txt` (with a reference in `messages.json`).
 
 ## Settings
 
-| Key | Default | Meaning |
-|---|---|---|
-| `repository` | `""` | `owner/name`. Per project. |
-| `branch` | `"main"` | The branch. |
-| `folder` | `""` | Local working copy. Empty: the first folder of the project (top of the side bar). A relative path is taken from the project file's folder. |
-| `folder_map` | `{"dot-github": ".github"}` | Local folder names that stand for another name on GitHub (first path segment). The default lets you keep `.github` as `dot-github` locally, where tools that hide dot-folders can see it. |
-| `ignore` | state file, `*.sublime-workspace`, `*.sublime-project`, `.DS_Store`, `Thumbs.db` | Glob patterns never synced. |
-| `token` | `""` | The fine-grained personal access token. User settings only. |
-| `confirm_commit` | `true` | Show the file list and ask before committing. |
-| `ask_commit_message` | `true` | Ask for the commit message; `false` uses the default ("Add x.md" / "Update x.md", or "Add 2 files, update 3 files"). |
-| `ask_release_details` | `true` | Ask for title and notes of a release; `false` takes the tag as title and no notes. |
-| `tag_prefix` | `"v"` | Prefix of version tags (`v1.2.3`). Set `""` for plain numbers. |
-| `moving_tag` | `"ask"` | After a release: `"ask"`, `"major"` (`v1`), `"minor"` (`v1.2`), `""` (never) or a fixed tag name. See *Moving tags*. |
-| `release_notes_from_changelog` | `false` | Take the release notes from the Unreleased section of `CHANGELOG.md` and close that section. See *Release notes from the changelog*. |
-| `sublime_version_files` | `false` | For Sublime Text packages: write `messages/<tag>.txt` (Package Control's upgrade note) with the same release notes, plus its entry in `messages.json`; committed before the release. |
-| `show_panel_on_output` | `true` | Open the output panel when the package reports something. |
+```JSONC
+{
+    // Settings for GitHub Light package
+    // Every setting here can be overridden for all projects in the package settings, or per project in the .sublime-project file
 
-Every setting can be set in the project file under `"settings": {"github_light": {…}}`, which overrides the general settings.
+    // The repository the folder is synced with, as "owner/name" (e.g. "wunditta/sublime-github-light")
+    "repository": "",
+
+    // The branch for file transfer.
+    "branch": "main",
+
+    // Local folder holding the working copy of the repository. Empty = the first folder of the project (the top one in
+    // the side bar). Absolute or relative path (a relative path is taken from the folder holding the project file).
+    "folder": "",
+
+    // Local folder names, which stand for differently named folders on GitHub (only first folder level).
+    // This is e.g. necessary if you use an AI agent, which is not allowed to write to a local folder `.github`.
+    "folder_map": {"dot-github": ".github"},
+
+    // Files never downloaded or committed (glob patterns, matched against the full relative path and the file name).
+    "ignore": [".github-sync-hash.json", "_backup", "*.sublime-workspace", "*.sublime-project", ".DS_Store", "Thumbs.db"],
+
+    // Personal access token (GitHub > Settings › Credentials › Fine-grained personal access tokens › Generate new token, limited
+    // to the repository, with the permission "Contents: Read and write".
+    "token": "",
+
+    // Shows a confirmation dialog with a summary of what will be done (number of files to write, skip, delete, conflicts, etc).
+    // The console shows the full list of files with their actions (in case of ambiguity a suggestion is shown if possible).
+    // Confirming with "OK" will do as requested (i.e. uploading or downloading, ignoring suggested actions, so e.g. an upload
+    // will upload even if the file on GitHub is newer); a sync needs to ask per conflict. The button "As suggested" (only
+    // appears if necessary) will follow the suggested actions as shown in the console. Note: the suggested actions depend on the
+    // setting "conflict_and_delete_files". So, for example, if this setting is false, no confirmation dialog is shown, except if
+    // the setting "conflict_and_delete_files" wants deletions or conflicts confirmed.
+    "confirm_file_transfer": true,
+
+    // Any file transfer is written to a state file, which allows to detect conflicts (both sides changed) and if a file was
+    // deleted on one side (i.e. a file that exists on one side only, although it was synced before). This allows safely syncing
+    // both sides. However, while this is the expected behavior for syncing, it may not be the case for a one way transfer (up
+    // or down) and a file deletion may come unexpected. Therefore, this setting allows to finetune the behavior for deletions
+    // and conflicts (file changed on both sides):
+    //   "never":  If a file was deleted on one side, it will not be deleted on the other. Conflict files are left alone.
+    //   "both":   Deleted files like above. Conflict: Both files are kept (older one with modification date) locally only (dated
+    //             copies are never synced).
+    //   "ask":    Deletions and conflicts trigger the confirmation dialog (confirm_file_transfer=true) or will ask for each
+    //             file (for conflict: keep local, GitHub, both). Deleted and overwritten conflict files are backed-up.
+    //   "sync":   Sync deletes without asking (for conflicts like "ask"), a Download/Commit like "ask". Backup: yes
+    //   "always": Sync, Download and Commit delete without asking. Conflicts keep the newer, delete the older. Backup: yes
+    //   "chaos":  Like "always". No backup!
+    // Backup: a local file is copied into the folder "_backup" next to the state file before it is deleted or overwritten
+    // (on GitHub the history is the backup). Files never synced are never deleted. The old name "delete_files" is still read.
+    "conflict_and_delete_files": "ask",
+
+    // Ask for the commit message. false: the default message is used ("Add x.md", "Update x.md", "Add 2 files, update 3 files").
+    "ask_commit_message": true,
+
+    // What the "Create Release" function asks for:
+    //   "all":   manually specify the title and the notes
+    //   "notes": the tag is used as title; the notes can be edited (default depends on release_notes_from_changelog)
+    //   "never": the default values from "notes" are taken without asking
+    // The notes open in an editor tab (Markdown, word wrap) with a banner:
+    // Ctrl+Enter, Ctrl+S or the banner's link creates the release; to cancel close the tab (ESC).
+    "ask_release_details": "all",
+
+    // Prefix of the version tags when creating a release ("v" -> v1.2.3, "" -> 1.2.3).
+    "tag_prefix": "v",
+
+    // Adds or updates a moving tag. If you use this you need to update this after each new release! A moving tag is a long time
+    // support tag, which points to a real release and does not change with each new release (e.g.  v1 that always points to the
+    // latest v1.x.x release). Especially GitHub Actions are referenced that way to stay valid for a longer time
+    // (e.g. `uses: owner/action@v1`).
+    //   "ask":   ask after each release whether to move the major (v1) or minor (v1.2) tag
+    //   "major": move the major tag (v1) without asking (e.g. v1.1.1 >>> v1; v2.0.1 >>> v2)
+    //   "minor": move the minor tag (v1.2) without asking (e.g. v1.2.3 >>> v1.2; v1.3.4 >>> v1.3)
+    //   "":      do not create or update a moving tag
+    //   any other value: a fixed tag name that is moved to every release (e.g. "latest")
+    "moving_tag": "",
+
+    // Label of a new release (the options provided on the GitHub page for a new release):
+    // * "latest": marked as the latest release
+    // * "pre": pre-release
+    // * "none": neither
+    // * "" or "ask": a dropdown asks each time
+    "release_label": "latest",
+
+    // If you maintain a `CHANGELOG.md` file (in root), setting this to true will take the release notes from there: use
+    // `## [Unreleased]` (tied to level 2) for the section with the changes of the new release. The section text is taken as
+    // release notes. After releasing, this heading is renamed to the new version with date, e.g. `## [v1.0.2] - 2026-11-14`, and
+    // a new section "## [Unreleased]" is added at the top. If this section is empty or missing a confirmation dialog comes up to
+    // continue or cancel.
+    "release_notes_from_changelog": false,
+
+    // For Sublime Packages: True: works like "release_notes_from_changelog" but writes the text into `messages/<tag>.txt`
+    // and binds it to messages.json. Sublime's Package Control shows this to users of a Sublime Text package after an upgrade.
+    "sublime_version_files": false,
+
+// Where GitHub Light writes its output (the plan with every file, the results, errors):
+    //   "console": the output panel, shown when something is written (default)
+    //   "tab":     a tab "GitHub Light" that collects the output of all actions until you close it (better for many files)
+    //   "none":    nothing is shown (the output still goes to the panel, open it by hand if needed)
+    // Note: it is strongly recommended to keep the output visible, as it is the only source of detailed information about the
+    // status of the files. The old setting "show_panel_on_output" (true/false) is still read.
+    "output_results": "console",
+}
+```
 
 ## Key bindings
 
-None by default. Preferences › Package Settings › GitHub Light › Key Bindings shows the commands; copy the ones you want to the right-hand side, for example
+Keys are only defined for confirming the release notes (Ctrl/Cmd+S, Ctrl/Cmd+Enter) and only in this context, so they will not be active in any other situations. Preferences › Package Settings › GitHub Light › Key Bindings has all available commands (commented out). Copy the ones you want to the right-hand side, for example:
 
-```json
+```jsonc
 [
     { "keys": ["primary+alt+c"], "command": "ghl_commit", "args": {"scope": "current"} },
     { "keys": ["primary+shift+alt+c"], "command": "ghl_commit", "args": {"scope": "all"} },
-    { "keys": ["primary+alt+d"], "command": "ghl_download" }
+    { "keys": ["primary+alt+d"], "command": "ghl_sync" }
 ]
 ```
-
-(`primary` is Ctrl on Windows and Linux, ⌘ on macOS.)
+`primary` is Ctrl on Windows and Linux, ⌘ on macOS.
 
 ## Limits
 
 * One folder, one repository, one branch per project. No branches, merges, rebases, stashes.
-* Commit never deletes files on GitHub; delete them on the website if you must.
-* Binary files are synced like any other file (by hash), but the compare page on GitHub shows no diff for them.
-* The repository's wiki is a separate git repository that the API does not expose; GitHub Light cannot sync it. Keep the pages in the repository and publish them with [publish-wiki-badges-action](https://github.com/wunditta/publish-wiki-badges-action).
+* The repository's wiki is a separate git repository that the API does not expose; GitHub Light cannot sync it. Keep the pages in the repository and publish them with an action, e.g. [publish-wiki-badges-action](https://github.com/wunditta/publish-wiki-badges-action).
 * Repositories whose tree does not fit into one API response (tens of thousands of files) are not supported.
 
 ## Installation
 
-Via [Package Control](https://packagecontrol.io): `Package Control: Install Package` › `GitHub Light`. By hand: copy this repository into a folder `GitHub Light` inside Sublime's `Packages` folder (Preferences › Browse Packages…).
+Via [Package Control](https://packagecontrol.io): `Package Control: Install Package` › `GitHub Light`. By hand: copy this repository into a folder `GitHub Light` inside Sublime's `Packages` folder (open with: Preferences › Browse Packages…).
 
 ## License
 

@@ -1,7 +1,21 @@
 [
-    // No default key bindings. Copy the entries you want into your user key bindings, e.g.:
-    // { "keys": ["primary+alt+c"], "command": "ghl_commit", "args": {"scope": "current"} },
-    // { "keys": ["primary+shift+alt+c"], "command": "ghl_commit", "args": {"scope": "all"} },
-    // { "keys": ["primary+alt+d"], "command": "ghl_download" },
-    // { "keys": ["primary+alt+h"], "command": "ghl_open_online", "args": {"kind": "history"} }
+    // Every command of the package, one line each. Lines without a key are commented out: copy them into your
+    // user key bindings and fill in the keys. "primary" is Ctrl on Windows and Linux, Cmd on macOS.
+    // { "keys": [""], "command": "ghl_sync" },
+    // { "keys": [""], "command": "ghl_download" },
+    // { "keys": [""], "command": "ghl_commit", "args": {"scope": "current"} },
+    // { "keys": [""], "command": "ghl_commit", "args": {"scope": "all"} },
+    // { "keys": [""], "command": "ghl_status" },
+    // { "keys": [""], "command": "ghl_open_online", "args": {"kind": "blob"} },
+    // { "keys": [""], "command": "ghl_open_online", "args": {"kind": "blame"} },
+    // { "keys": [""], "command": "ghl_open_online", "args": {"kind": "history"} },
+    // { "keys": [""], "command": "ghl_diff" },
+    // { "keys": [""], "command": "ghl_release" },
+    // { "keys": [""], "command": "ghl_move_tag" },
+    // { "keys": [""], "command": "ghl_settings" },
+    // In a "Release notes" tab: Ctrl+Enter or Ctrl+S (Cmd on macOS) creates the release (internal, keep as it is)
+    { "keys": ["primary+enter"], "command": "ghl_release_notes_done",
+      "context": [ { "key": "setting.ghl_release_notes", "operator": "equal", "operand": true } ] },
+    { "keys": ["primary+s"], "command": "ghl_release_notes_done",
+      "context": [ { "key": "setting.ghl_release_notes", "operator": "equal", "operand": true } ] }
 ]
