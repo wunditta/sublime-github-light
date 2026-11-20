@@ -793,11 +793,14 @@ def message_then_apply(window, api, folder, plan):
 
 def apply_plan(window, api, folder, plan, message):
     """Worker thread: downloads, dated copies and local deletions first, then one commit with the uploads and the
-    deletions on GitHub. Reports only what went differently from the plan."""
+    deletions on GitHub. Lists every transferred and deleted file as done, and what went wrong."""
     w, state, stored = window, plan.state, plan.state["files"]
     title = OP_TITLE[plan.op]
     keep_backup = mode(w) != "chaos"
-    errors = []
+    errors, done = [], []
+
+    def did(what, it, note=""):
+        done.append("  %-21s %s%s" % (what + ":", it.path, note))
 
     def write_local(it, data):
         if it.local is not None and keep_backup:
@@ -811,20 +814,26 @@ def apply_plan(window, api, folder, plan, message):
         try:
             if it.action == "download":
                 write_local(it, api.blob(it.remote))
+                did("Downloaded", it)
             elif it.action == "delete_local":
                 if keep_backup:
                     backup(folder, it.lp)
                 os.remove(it.lp)
                 stored.pop(it.path, None)
+                did("Deleted local", it)
             elif it.action == "both":
                 data = api.blob(it.remote)
                 if it.newer:                                  # local is the newer: GitHub's version becomes the dated copy
-                    with open(dated_name(it.lp, api.last_commit_time(it.path) or time.time()), "wb") as f:
+                    copy = dated_name(it.lp, api.last_commit_time(it.path) or time.time())
+                    with open(copy, "wb") as f:
                         f.write(data)
+                    did("Downloaded", it, " (GitHub's version as %s)" % os.path.basename(copy))
                 else:                                         # GitHub's is the newer: the local file becomes the dated copy
-                    os.replace(it.lp, dated_name(it.lp, os.path.getmtime(it.lp)))
+                    copy = dated_name(it.lp, os.path.getmtime(it.lp))
+                    os.replace(it.lp, copy)
                     it.local = None
                     write_local(it, data)
+                    did("Downloaded", it, " (local version kept as %s)" % os.path.basename(copy))
         except (ApiError, OSError) as e:
             errors.append("  %s: %s" % (it.path, e))
     commits = commit_items(plan)
@@ -855,11 +864,15 @@ def apply_plan(window, api, folder, plan, message):
                 for it in commits:
                     if it.action == "delete_remote":
                         stored.pop(it.path, None)
+                        did("Deleted GitHub", it)
                     else:
                         stored[it.path] = it.local
+                        did("Committed", it)
     if not errors:
         state["head"] = new_head or plan.head                 # the folder now matches this head (except skipped files)
     save_state(folder, state)
+    if done:
+        log(w, "\n".join(done))
     if errors:
         log(w, "Error:\n" + "\n".join(errors))
         error("%s: %s failed, see the console" % (title, describe(len(errors), "action")))
