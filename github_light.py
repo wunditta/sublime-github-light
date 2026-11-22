@@ -17,7 +17,9 @@ PANEL = "github_light"
 DEFAULTS = {
     "repository": "",
     "branch": "main",
-    "folder": "",
+    "repo_folder": "",
+    "promote_repo_folder": False,
+    "promoted_folder_badge": "\u2605",
     "folder_map": {"dot-github": ".github"},
     "ignore": [STATE_FILE, "_backup", "*.sublime-workspace", "*.sublime-project", ".DS_Store", "Thumbs.db"],
     "token": "",
@@ -51,7 +53,7 @@ def setting(window, key):
 
 def sync_folder(window):
     """The local working copy: 'folder' relative to the project file; empty = the first folder in the side bar."""
-    f = setting(window, "folder") or ""
+    f = setting(window, "repo_folder") or ""
     if not f:
         if window is not None and window.folders():
             return os.path.normpath(window.folders()[0])
@@ -153,9 +155,15 @@ _anchor_pos = {}            # view id -> layout y of the current action's first 
 OUTPUT_TAB = "GitHub Light"
 
 
+_panel_only = set()         # ids of windows whose running action (Create Release, Move Tag) writes to the console panel only
+
+
 def output_mode(window):
     """output_results: "none" (written to the panel, never shown), "console" (the output panel is shown), "tab" (a scratch
-    tab "GitHub Light" that stays until closed); the old key show_panel_on_output (true/false) is still read"""
+    tab "GitHub Light" that stays until closed); the old key show_panel_on_output (true/false) is still read. Create
+    Release and Move Tag ignore the setting: their report goes to the console panel (the setting is about the transfers)."""
+    if window is not None and window.id() in _panel_only:
+        return "console"
     if not has_setting(window, "output_results") and has_setting(window, "show_panel_on_output"):
         return "console" if setting(window, "show_panel_on_output") else "none"
     v = str(setting(window, "output_results") or "console").lower()
@@ -167,11 +175,14 @@ def output_tab(window):
     for v in window.views():
         if v.settings().get("ghl_output"):
             return v
-    v = window.new_file()
+    active = window.active_view()
+    v = window.new_file()                                  # new_file brings its tab to the front ...
     v.set_name(OUTPUT_TAB)
     v.set_scratch(True)
     v.settings().set("ghl_output", True)
     v.settings().set("word_wrap", False)
+    if active is not None and not _anchor_next[0]:         # ... which only an action start may do (log focuses it then)
+        window.focus_view(active)
     return v
 
 
@@ -212,9 +223,14 @@ def anchor():
     _anchor_next[0] = True
 
 
-def started(window, what):
+def started(window, what, panel_only=False):
     """"<what> started..." in the output, only when the output is shown (it is feedback that something is running);
-    either way the output of this action starts at the top of the panel or tab"""
+    either way the output of this action starts at the top of the panel or tab. panel_only: this action (and every log
+    line until the next action starts) goes to the console panel whatever output_results says."""
+    if window is not None:
+        _panel_only.discard(window.id())
+        if panel_only:
+            _panel_only.add(window.id())
     anchor()
     if output_mode(window) != "none":
         log(window, "%s started..." % what, gap=True)
@@ -389,7 +405,7 @@ def prepare(window):
     """(api, folder) or None after an error message"""
     folder = sync_folder(window)
     if not folder:
-        error("No project folder - open a project or a folder first")
+        error("No repo folder - open a project or a folder first")
         return None
     try:
         api = Api(window)
@@ -400,7 +416,7 @@ def prepare(window):
 
 
 def inside(folder, path):
-    """is path (file or folder) inside the sync folder (or the folder itself)?"""
+    """is path (file or folder) inside the repo folder (or the folder itself)?"""
     if not folder or not path:
         return False
     p, f = os.path.normcase(os.path.normpath(path)), os.path.normcase(folder)
@@ -410,6 +426,32 @@ def inside(folder, path):
 def active_file(window):
     v = window.active_view()
     return v.file_name() if v else None
+
+
+def menu_view(window, group=None, index=None):
+    """The view a right-click menu means: the clicked tab (the tab header menu passes group and index), else the active
+    view."""
+    if group is not None and index is not None:
+        views = window.views_in_group(group)
+        if 0 <= index < len(views):
+            return views[index]
+    return window.active_view()
+
+
+def menu_file(window, files=None, group=None, index=None):
+    """The file a right-click menu means: the side bar's single file, the clicked tab's file or the active file."""
+    if files is not None:
+        return files[0] if len(files) == 1 else None
+    v = menu_view(window, group, index)
+    return v.file_name() if v else None
+
+
+def project_window(window):
+    """is this window a GitHub Light project (its project file has a "github_light" settings block)? The right-click menus
+    show nothing otherwise."""
+    if window is None:
+        return False
+    return ((window.project_data() or {}).get("settings") or {}).get(PROJECT_KEY) is not None
 
 
 def compare_url(api, state):
@@ -475,7 +517,7 @@ def short_list(names):
 # ---------------------------------------------------------------- commands
 
 CLOCK_SLACK = 120          # seconds of tolerance between the local clock and GitHub's commit times
-BACKUP_DIR = "_backup"     # next to the state file; a local file is copied there before it is deleted or overwritten
+BACKUP_DIR = "_backup"     # beside the project file (else inside the repo folder); a local file is copied there before it is deleted or overwritten
 MODES = ("never", "both", "ask", "sync", "always", "chaos")
 DATED_COPY = re.compile(r" \(\d{4}-\d{2}-\d{2} \d{2}_\d{2}\)(\.[^./]+)?$")   # "name (2026-11-19 10_22).md": a kept older version, never synced
 
@@ -518,10 +560,16 @@ def mode(window):
     return v if v in MODES else "ask"
 
 
-def backup(folder, lp):
-    """Copy a local file into <folder>/_backup/<relative path> (an earlier backup of the same file is replaced)."""
+def backup_root(window, folder):
+    """The _backup folder: beside the project file, or inside the repo folder when there is no project file."""
+    pf = window.project_file_name() if window is not None else None
+    return os.path.join(os.path.dirname(pf) if pf else folder, BACKUP_DIR)
+
+
+def backup(window, folder, lp):
+    """Copy a local file into _backup/<relative path> (an earlier backup of the same file is replaced)."""
     rel = os.path.relpath(lp, folder)
-    dest = os.path.join(folder, BACKUP_DIR, rel)
+    dest = os.path.join(backup_root(window, folder), rel)
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     with open(lp, "rb") as src, open(dest, "wb") as dst:
         dst.write(src.read())
@@ -810,7 +858,7 @@ def apply_plan(window, api, folder, plan, message):
 
     def write_local(it, data):
         if it.local is not None and keep_backup:
-            backup(folder, it.lp)
+            backup(w, folder, it.lp)
         os.makedirs(os.path.dirname(it.lp), exist_ok=True)
         with open(it.lp, "wb") as f:
             f.write(data)
@@ -823,7 +871,7 @@ def apply_plan(window, api, folder, plan, message):
                 did("Downloaded", it)
             elif it.action == "delete_local":
                 if keep_backup:
-                    backup(folder, it.lp)
+                    backup(w, folder, it.lp)
                 os.remove(it.lp)
                 stored.pop(it.path, None)
                 did("Deleted local", it)
@@ -912,12 +960,12 @@ def side_bar_limit(window, files=None, dirs=None):
     if files:
         chosen = set(os.path.normcase(os.path.normpath(f)) for f in files if f and folder and inside(folder, f) and os.path.isfile(f))
         if not chosen:
-            return None, "The file is not inside the sync folder \"%s\"" % folder
+            return None, "The file is not inside the repo folder \"%s\"" % folder
         return (lambda path, lp: os.path.normcase(os.path.normpath(lp)) in chosen), None
     if dirs:
         sub = os.path.normpath(dirs[0])
         if not folder or not inside(folder, sub):
-            return None, "The folder is not inside the sync folder \"%s\"" % folder
+            return None, "The folder is not inside the repo folder \"%s\"" % folder
         if os.path.normcase(sub) == os.path.normcase(folder):
             return None, None
         prefix = os.path.normcase(sub) + os.sep
@@ -928,6 +976,8 @@ def side_bar_limit(window, files=None, dirs=None):
 def side_bar_visible(window, files=None, dirs=None):
     # side bar: Sublime fills "files": [] / "dirs": [] with the clicked items - an EMPTY list on the other kind of item
     folder = sync_folder(window)
+    if (files is not None or dirs is not None) and not project_window(window):
+        return False
     if files is not None:
         return bool(files) and all(inside(folder, f) for f in files)
     if dirs is not None:
@@ -949,6 +999,9 @@ class GhlSyncCommand(sublime_plugin.WindowCommand):
     def is_visible(self, files=None, dirs=None):
         return side_bar_visible(self.window, files, dirs)
 
+    def is_enabled(self, files=None, dirs=None):
+        return project_window(self.window)
+
 
 class GhlDownloadCommand(sublime_plugin.WindowCommand):
     """GitHub -> folder: changed and new files of the branch; files deleted on GitHub since the last sync per
@@ -964,6 +1017,9 @@ class GhlDownloadCommand(sublime_plugin.WindowCommand):
     def is_visible(self, files=None, dirs=None):
         return side_bar_visible(self.window, files, dirs)
 
+    def is_enabled(self, files=None, dirs=None):
+        return project_window(self.window)
+
     def description(self, files=None, dirs=None):
         # the only dynamic caption: one or several files from the side bar
         if files is not None:
@@ -976,10 +1032,10 @@ class GhlCommitCommand(sublime_plugin.WindowCommand):
     given by the side bar (files=[...]) or the files below a side bar folder (dirs=[...]), in one commit; files
     deleted here since the last sync per delete_files; a file changed on both sides is asked for."""
 
-    def run(self, scope="all", files=None, dirs=None, context=False):
+    def run(self, scope="all", files=None, dirs=None, context=False, group=None, index=None):
         w = self.window
         if scope == "current" and not files and not dirs:
-            files = [active_file(w)]
+            files = [menu_file(w, None, group, index)]
         if files:
             folder = sync_folder(w)
             chosen = [f for f in files if f and folder and inside(folder, f) and os.path.isfile(f)]
@@ -994,23 +1050,22 @@ class GhlCommitCommand(sublime_plugin.WindowCommand):
             return error(err)
         start(w, "commit", limit)
 
-    def is_enabled(self, scope="all", files=None, dirs=None, context=False):
+    def is_enabled(self, scope="all", files=None, dirs=None, context=False, group=None, index=None):
+        if not project_window(self.window):
+            return False
         if scope == "current" and not files and not dirs:
-            return inside(sync_folder(self.window), active_file(self.window))
+            return inside(sync_folder(self.window), menu_file(self.window, None, group, index))
         return True
 
     # side bar: Sublime fills "files": [] / "dirs": [] with the clicked items - an EMPTY list on the other kind of item
-    def is_visible(self, scope="all", files=None, dirs=None, context=False):
-        folder = sync_folder(self.window)
-        if files is not None:
-            return bool(files) and all(inside(folder, f) for f in files)
-        if dirs is not None:
-            return bool(dirs) and all(inside(folder, d) for d in dirs)
+    def is_visible(self, scope="all", files=None, dirs=None, context=False, group=None, index=None):
+        if files is not None or dirs is not None:
+            return side_bar_visible(self.window, files, dirs)
         if context:
-            return self.is_enabled(scope)
+            return project_window(self.window) and self.is_enabled(scope, group=group, index=index)
         return True
 
-    def description(self, scope="all", files=None, dirs=None, context=False):
+    def description(self, scope="all", files=None, dirs=None, context=False, group=None, index=None):
         # the only dynamic caption (one or several files from the side bar); static captions are in the menu files
         if files is not None:
             return "GitHub: Commit File" if len(files) <= 1 else "GitHub: Commit Files"
@@ -1020,9 +1075,20 @@ class GhlCommitCommand(sublime_plugin.WindowCommand):
 
 
 class GhlStatusCommand(sublime_plugin.WindowCommand):
-    """What a Sync would do, in the same categories, without doing anything."""
+    """What a Sync would do, in the same categories, without doing anything. Right-click menus: in the side bar on any
+    item of a project window, in the text area and on a tab only for a file inside the repo folder."""
 
-    def run(self):
+    def is_visible(self, context=False, side_bar=False, group=None, index=None):
+        if side_bar:
+            return project_window(self.window)
+        if context:
+            return project_window(self.window) and inside(sync_folder(self.window), menu_file(self.window, None, group, index))
+        return True
+
+    def is_enabled(self, context=False, side_bar=False, group=None, index=None):
+        return project_window(self.window)
+
+    def run(self, context=False, side_bar=False, group=None, index=None):
         p = prepare(self.window)
         if not p:
             return
@@ -1044,83 +1110,137 @@ class GhlStatusCommand(sublime_plugin.WindowCommand):
 class GhlOpenOnlineCommand(sublime_plugin.WindowCommand):
     """Open the current file on GitHub: kind = "blob" (view), "blame" or "history"."""
 
-    def run(self, kind="blob", files=None, context=False):
+    def run(self, kind="blob", files=None, context=False, group=None, index=None):
         p = prepare(self.window)
         if not p:
             return
         api, folder = p
-        v = self.window.active_view()
-        fn = files[0] if files else (v.file_name() if v else None)
+        v = None if files else menu_view(self.window, group, index)
+        fn = menu_file(self.window, files, group, index)
         if not inside(folder, fn) or not os.path.isfile(fn):
-            return error("The file is not inside the sync folder \"%s\"" % folder)
+            return error("The file is not inside the repo folder \"%s\"" % folder)
         path = to_remote(self.window, os.path.relpath(fn, folder))
         line = None
-        if not files and kind in ("blob", "blame") and v and v.sel():
+        if kind in ("blob", "blame") and v and v.sel():
             line = v.rowcol(v.sel()[0].begin())[0] + 1
         webbrowser.open(api.web(kind, urllib.parse.quote(path), line))
 
-    def is_enabled(self, kind="blob", files=None, context=False):
-        if files is not None:
-            return len(files) == 1 and inside(sync_folder(self.window), files[0])
-        return inside(sync_folder(self.window), active_file(self.window))
+    # the File Review submenu cannot be hidden (Sublime shows every submenu), so its items are disabled instead of hidden
+    def is_enabled(self, kind="blob", files=None, context=False, group=None, index=None):
+        return project_window(self.window) and inside(sync_folder(self.window), menu_file(self.window, files, group, index))
 
-    def is_visible(self, kind="blob", files=None, context=False):
-        if files is not None or context:
-            return self.is_enabled(kind, files)
-        return True
+
+def syntax_for(scope, fallback, sample=None):
+    """The path of the syntax Sublime would use for a file named sample (the user's own choice for that extension),
+    else an installed syntax for the scope (the default package may be disabled in favour of another one, e.g. Markdown
+    for MarkdownEditing), else fallback."""
+    try:
+        if sample:
+            found = sublime.find_syntax_for_file(sample)
+            if found:
+                return found.path
+        found = sublime.find_syntax_by_scope(scope)
+        return found[0].path if found else fallback
+    except Exception:
+        return fallback
+
+
+def diff_tab(window, fn, suffix, text):
+    """A read-only scratch tab with Diff syntax named after the file: "<name> <suffix>", with the parent folder behind it
+    when another open file of the window has the same name (as Sublime disambiguates its tabs)."""
+    name = os.path.basename(fn)
+    same = [v for v in window.views() if v.file_name() and os.path.basename(v.file_name()) == name
+            and os.path.normcase(v.file_name()) != os.path.normcase(fn)]
+    title = "%s %s" % (name, suffix) + ((" \u2014 " + os.path.basename(os.path.dirname(fn))) if same else "")
+    view = window.new_file()
+    view.set_name(title)
+    view.set_scratch(True)
+    view.run_command("append", {"characters": text + "\n"})
+    view.assign_syntax("Packages/Diff/Diff.sublime-syntax")
+    view.set_read_only(True)
+    return view
+
+
+def unified(a, b, a_name, b_name):
+    import difflib
+    return "\n".join(difflib.unified_diff(a, b, a_name, b_name, lineterm=""))
 
 
 class GhlDiffCommand(sublime_plugin.WindowCommand):
     """The difference between the local file (current or clicked) and its version on the branch head, as a unified diff
-    in a scratch tab."""
+    in a scratch tab. A file with unsaved changes asks whether the current (unsaved) or the saved state is compared."""
 
-    def run(self, files=None, context=False):
+    def run(self, files=None, context=False, group=None, index=None):
         p = prepare(self.window)
         if not p:
             return
         api, folder = p
-        v = self.window.active_view()
-        fn = files[0] if files else (v.file_name() if v else None)
+        fn = menu_file(self.window, files, group, index)
         if not inside(folder, fn) or not os.path.isfile(fn):
-            return error("The file is not inside the sync folder \"%s\"" % folder)
+            return error("The file is not inside the repo folder \"%s\"" % folder)
+        view = self.window.find_open_file(fn)
+        mine = None
+        if view is not None and view.is_dirty():
+            r = sublime.yes_no_cancel_dialog("Compare the current, unsaved state, or the saved state with the state on GitHub?\n\n"
+                                             + os.path.basename(fn), "Current", "Saved")
+            if r == sublime.DIALOG_CANCEL:
+                return
+            if r == sublime.DIALOG_YES:
+                mine = view.substr(sublime.Region(0, view.size())).splitlines()
+        if mine is None:
+            with open(fn, "rb") as f:
+                mine = f.read().decode("utf-8", "replace").splitlines()
         path = to_remote(self.window, os.path.relpath(fn, folder))
         started(self.window, "Diff")
-        run_async(lambda: self.work(api, folder, fn, path))
+        run_async(lambda: self.work(api, fn, path, mine))
 
-    def work(self, api, folder, fn, path):
+    def work(self, api, fn, path, mine):
         try:
             head = api.head()
             remote, _ = api.tree(head)
             sha = remote.get(path)
-            theirs = api.blob(sha).decode("utf-8", "replace").splitlines() if sha else []
+            if not sha:
+                log(self.window, "Diff %s: not on GitHub" % path)
+                return error("%s was not found on GitHub!" % os.path.basename(fn))
+            theirs = api.blob(sha).decode("utf-8", "replace").splitlines()
         except ApiError as e:
             return error(str(e))
+        diff = unified(theirs, mine, "GitHub: " + path, "local: " + path)
+        text = diff if diff else "No difference: %s is the same locally and on GitHub" % path
+        ui(self.show, fn, path, text)
+
+    def show(self, fn, path, text):
+        diff_tab(self.window, fn, "(GitHub diff)", text)
+        log(self.window, "Diff %s: %s" % (path, "no difference" if text.startswith("No difference") else "shown in a tab"))
+
+    # the File Review submenu cannot be hidden (Sublime shows every submenu), so its items are disabled instead of hidden
+    def is_enabled(self, files=None, context=False, group=None, index=None):
+        return project_window(self.window) and inside(sync_folder(self.window), menu_file(self.window, files, group, index))
+
+
+class GhlDiffUnsavedCommand(sublime_plugin.WindowCommand):
+    """The unsaved changes of an open file (current, clicked tab or side bar's file) against its saved state, as a unified
+    diff in a scratch tab - Sublime's "Show Unsaved Changes" in a tab. Any file, no project needed."""
+
+    def target(self, files=None, group=None, index=None):
+        fn = menu_file(self.window, files, group, index)
+        v = self.window.find_open_file(fn) if fn else None
+        return v if v is not None and v.is_dirty() and os.path.isfile(fn) else None
+
+    def run(self, files=None, context=False, group=None, index=None):
+        v = self.target(files, group, index)
+        if v is None:
+            return sublime.status_message("GitHub Light: no unsaved changes")
+        fn = v.file_name()
         with open(fn, "rb") as f:
-            mine = f.read().decode("utf-8", "replace").splitlines()
-        import difflib
-        diff = list(difflib.unified_diff(theirs, mine, "GitHub: %s%s" % (path, "" if sha else " (not on GitHub)"), "local: " + path, lineterm=""))
-        text = "\n".join(diff) if diff else "No difference: %s is the same locally and on GitHub" % path
-        ui(self.show, path, text)
+            saved = f.read().decode("utf-8", "replace").splitlines()
+        current = v.substr(sublime.Region(0, v.size())).splitlines()
+        name = os.path.basename(fn)
+        diff = unified(saved, current, "saved: " + name, "unsaved: " + name)
+        diff_tab(self.window, fn, "(unsaved changes)", diff or "No difference: the unsaved changes are only in line endings or encoding")
 
-    def show(self, path, text):
-        w = self.window
-        view = w.new_file()
-        view.set_name("Diff " + os.path.basename(path))
-        view.set_scratch(True)
-        view.assign_syntax("Packages/Diff/Diff.sublime-syntax")
-        view.run_command("append", {"characters": text + "\n"})
-        view.set_read_only(True)
-        log(w, "Diff %s: %s" % (path, "no difference" if text.startswith("No difference") else "shown in a tab"))
-
-    def is_enabled(self, files=None, context=False):
-        if files is not None:
-            return len(files) == 1 and inside(sync_folder(self.window), files[0])
-        return inside(sync_folder(self.window), active_file(self.window))
-
-    def is_visible(self, files=None, context=False):
-        if files is not None or context:
-            return self.is_enabled(files)
-        return True
+    def is_enabled(self, files=None, context=False, group=None, index=None):
+        return self.target(files, group, index) is not None
 
 
 CHANGELOG = "CHANGELOG.md"
@@ -1252,26 +1372,26 @@ def make_read_only(view, tries=50):
 
 
 class GhlNewProjectCommand(sublime_plugin.WindowCommand):
-    """Side bar, on a folder: a sub-folder with a project file for GitHub Light, opened with its settings. The repository
-    on GitHub is not created."""
+    """Menu bar: a project file for GitHub Light in a folder chosen (or created) in the system's folder dialog, named
+    after the folder, opened with its settings. The repository on GitHub is not created. Sublime 3 has no folder
+    dialog: an input panel asks for the path."""
 
-    def run(self, dirs=None):
-        if not dirs:
-            return
-        parent = dirs[0]
-        self.window.show_input_panel("Name of the new GitHub project (sub-folder of %s):" % (os.path.basename(parent) or parent), "",
-                                     lambda name: self.create(parent, name), None, None)
+    def run(self):
+        if hasattr(sublime, "select_folder_dialog"):
+            sublime.select_folder_dialog(lambda folder: folder and self.create(folder))
+        else:
+            self.window.show_input_panel("Folder of the new GitHub project (created if missing):", "",
+                                         lambda folder: folder.strip() and self.create(folder.strip()), None, None)
 
-    def create(self, parent, name):
-        name = name.strip()
-        if not name or re.search(r'[\\/:*?"<>|]', name):
-            return sublime.error_message("GitHub Light: \"%s\" is not a valid folder name" % name)
-        folder = os.path.join(parent, name)
+    def create(self, folder):
+        folder = os.path.normpath(folder)
+        name = os.path.basename(folder)
+        if not name:
+            return sublime.error_message("GitHub Light: a drive root cannot be the project folder")
         project = os.path.join(folder, name + ".sublime-project")
         if os.path.exists(project):
             return sublime.error_message("GitHub Light: %s exists already" % project)
-        if not os.path.isdir(folder):
-            os.makedirs(folder)
+        os.makedirs(os.path.join(folder, "repo"), exist_ok=True)   # the repo folder; _backup comes beside the project file
         with open(project, "w", encoding="utf-8") as f:
             f.write(PROJECT_TEMPLATE)
         sublime.run_command("new_window")
@@ -1286,9 +1406,6 @@ class GhlNewProjectCommand(sublime_plugin.WindowCommand):
             w.run_command("ghl_settings")
         sublime.set_timeout(settings, 200)
 
-    def is_visible(self, dirs=None):
-        return bool(dirs) and len(dirs) == 1 and os.path.isdir(dirs[0])
-
 
 PROJECT_TEMPLATE = """{
     "folders":
@@ -1302,6 +1419,12 @@ PROJECT_TEMPLATE = """{
             // Settings of GitHub Light for this project. Any key of the package settings (left column of
             // Tools > GitHub Light > Settings) can be set here and overrides it for this project - except "token".
             "repository": "owner/name",
+            // The repo folder (what is synced), relative to this file; backups of overwritten or deleted files go to _backup beside this file.
+            "repo_folder": "repo",
+            // The repo folder as its own entry in the side bar: false, true (the root folder hides it) or "duplicate" (the
+            // root shows it too); the badge is appended to its name.
+            "promote_repo_folder": false,
+            "promoted_folder_badge": "\u2605",
         }
     }
 }
@@ -1328,6 +1451,76 @@ class GhlReleaseNotesDoneCommand(sublime_plugin.TextCommand):
         return bool(_pending_release) and _pending_release["view"] == self.view.id()
 
 
+# ------------------------------------------------------------ promoted folder --
+# promote_repo_folder: the repo folder as a top-level entry of the side bar (true: the root folder hides it,
+# "duplicate": the root shows it too); checked when a project loads, when the project file is saved and at plugin load.
+# Existing entries are never moved or removed - false means hands off.
+
+def promote_folder(window, folder, mode, badge, top):
+    """Ensures a top-level "folders" entry for folder (absolute path) in the project file: inserted at the top (top=True)
+    or directly above the root entry that contains it (GitHub Light: above the root, the TTS editor puts its folder on top); with mode true the root entry excludes it. Writes the project
+    file only when something changes. Returns True when it did."""
+    if not mode or window is None or not folder or not window.project_file_name():
+        return False
+    pd = window.project_data() or {}
+    folders = pd.get("folders") or []
+    base = os.path.dirname(window.project_file_name())
+    folder = os.path.normpath(folder)
+
+    def absolute(entry):
+        p = entry.get("path") or ""
+        return os.path.normpath(p if os.path.isabs(p) else os.path.join(base, p))
+    key = os.path.normcase(folder)
+    exists = any(os.path.normcase(absolute(e)) == key for e in folders)
+    roots = [e for e in folders if key.startswith(os.path.normcase(absolute(e)) + os.sep)]
+    changed = False
+    if not exists:
+        rel = os.path.relpath(folder, base)
+        entry = {"path": folder if rel.startswith("..") or os.path.isabs(rel) else rel.replace(os.sep, "/")}
+        if badge:
+            entry["name"] = "%s %s" % (os.path.basename(folder), badge)
+        at = 0 if top or not roots else folders.index(roots[0])
+        folders.insert(at, entry)
+        changed = True
+    if mode is True:
+        for root in roots:
+            rel = os.path.relpath(folder, absolute(root)).replace(os.sep, "/")
+            pattern = rel if "/" not in rel else "*/" + rel      # a direct child by name, a nested one by its path
+            pats = root.setdefault("folder_exclude_patterns", [])
+            if pattern not in pats:
+                pats.append(pattern)
+                changed = True
+    if changed:
+        pd["folders"] = folders
+        window.set_project_data(pd)
+    return changed
+
+
+def check_promoted_folder(window):
+    if window is None or not project_window(window):
+        return
+    mode = setting(window, "promote_repo_folder")
+    if mode not in (True, "duplicate"):
+        return
+    if promote_folder(window, sync_folder(window), mode, str(setting(window, "promoted_folder_badge") or "").strip(), top=False):
+        log(window, "Project: the repo folder was added to the side bar's folders (promote_repo_folder)")
+
+
+class GhlProjectListener(sublime_plugin.EventListener):
+    def on_load_project_async(self, window):
+        check_promoted_folder(window)
+
+    def on_post_save_async(self, view):
+        w = view.window()
+        if w is not None and view.file_name() and w.project_file_name() \
+                and os.path.normcase(view.file_name()) == os.path.normcase(w.project_file_name()):
+            check_promoted_folder(w)
+
+
+def plugin_loaded():
+    sublime.set_timeout(lambda: [check_promoted_folder(w) for w in sublime.windows()], 500)
+
+
 class GhlReleaseNotesListener(sublime_plugin.EventListener):
     def on_pre_close(self, view):
         global _pending_release
@@ -1340,6 +1533,9 @@ class GhlReleaseNotesListener(sublime_plugin.EventListener):
 class GhlReleaseCommand(sublime_plugin.WindowCommand):
     """Create a tag and a release on the branch head; the next version is chosen as patch, minor or major."""
 
+    def is_enabled(self):
+        return project_window(self.window)
+
     def run(self):
         p = prepare(self.window)
         if not p:
@@ -1351,13 +1547,14 @@ class GhlReleaseCommand(sublime_plugin.WindowCommand):
             self.notes = read_unreleased(folder)
             if self.notes is None:
                 return error("No \"Unreleased\" section found in %s (expected a heading \"## [Unreleased]\")" % os.path.join(folder, CHANGELOG))
+        started(self.window, "Create Release", panel_only=True)
+        if self.notes is not None:
             if not self.notes:
                 if not sublime.ok_cancel_dialog("The \"Unreleased\" section of %s is empty.\n\nRelease anyway (empty notes%s)?"
                                                 % (CHANGELOG, "" if ask_mode(self.window) != "never" else ", the section is closed empty"), "Release anyway"):
                     return log(self.window, "Release cancelled: the Unreleased section of %s is empty" % CHANGELOG)
             else:
                 log(self.window, "Release notes from %s:\n%s" % (CHANGELOG, "\n".join("  " + l for l in self.notes.splitlines())))
-        started(self.window, "Create Release")
         run_async(lambda: self.work(api))
 
     def work(self, api):
@@ -1409,10 +1606,10 @@ class GhlReleaseCommand(sublime_plugin.WindowCommand):
         v = self.window.new_file()
         v.set_scratch(True)
         v.set_name("Release notes %s" % tag)
-        v.assign_syntax("Packages/Markdown/Markdown.sublime-syntax")
+        v.assign_syntax(syntax_for("text.html.markdown", "Packages/Markdown/Markdown.sublime-syntax", "notes.md"))
         v.settings().set("word_wrap", True)
         v.settings().set("ghl_release_notes", True)
-        v.run_command("append", {"characters": self.notes or ""})
+        v.run_command("append", {"characters": "\n" + (self.notes or "")})   # line 1 stays empty: the banner hangs below it, above the notes
         _pending_release = {"view": v.id(), "cmd": self, "api": api, "prefix": prefix, "version": version, "tag": tag, "title": title}
         key = "\u2318" if sublime.platform() == "osx" else "Ctrl"
         html = ('<body id="ghl-release"><style>body {padding: 0.3rem 0.6rem; margin-bottom: 0.4rem; background-color: color(var(--background) blend(var(--foreground) 92%%)); '
@@ -1422,6 +1619,7 @@ class GhlReleaseCommand(sublime_plugin.WindowCommand):
         v.add_phantom("ghl_release", sublime.Region(0, 0), html, sublime.LAYOUT_BLOCK, on_navigate=lambda href: self.phantom_click(v, href))
         sublime.status_message("GitHub Light: edit the release notes, then %s+Enter or %s+S to create %s (close the tab to cancel)" % (key, key, tag))
         log(self.window, "Release %s: edit the notes in the tab \"%s\", then %s+Enter or %s+S creates the release; close the tab to cancel." % (tag, v.name(), key, key))
+        sublime.set_timeout(lambda: self.window.focus_view(v), 50)   # in front of the output tab, whatever the log did
 
     def phantom_click(self, v, href):
         if href == "done":
@@ -1437,6 +1635,11 @@ class GhlReleaseCommand(sublime_plugin.WindowCommand):
         section = self.notes or ""
         typed = entered.strip() if entered is not None else None
         notes = typed if typed is not None else section
+        label = getattr(self, "label", "latest")
+        log(self.window, "Release %s%s, title \"%s\"%s\n%s" % (
+            tag, {"pre": " (pre-release)", "none": " (no label)", "latest": " (latest release)"}.get(label, ""), title.strip() or tag,
+            "" if typed is None else " (notes edited in the tab)" if typed != section.strip() else " (notes as in the changelog)",
+            "\n".join("  " + l for l in notes.splitlines()) if notes else "  (no notes)"))
         try:
             # the changelog and the Package Control message file must be in the release: commit them first
             paths = []
@@ -1445,7 +1648,7 @@ class GhlReleaseCommand(sublime_plugin.WindowCommand):
                     # the prefilled notes were deleted in the tab: ask, do not just drop the section text
                     if not ui_confirm("The release notes are empty (the changelog section was deleted in the tab).\n\nRelease anyway?", "Release anyway"):
                         return log(self.window, "Release cancelled: empty notes")
-                paths.append(release_changelog(self.folder, tag, notes if notes != section else None))
+                paths.append(release_changelog(self.folder, tag, notes if notes != section.strip() else None))
             if setting(self.window, "sublime_version_files"):
                 paths += write_version_message(self.folder, vstr, tag, notes)
             if paths:
@@ -1453,11 +1656,12 @@ class GhlReleaseCommand(sublime_plugin.WindowCommand):
             rel = api.release(tag, title.strip() or tag, notes, getattr(self, "label", "latest"))
             sha = api.head()
         except ApiError as e:
+            log(self.window, "Error: %s" % e)
             return error(str(e))
         except OSError as e:
+            log(self.window, "Error: could not write the release files: %s" % e)
             return error("Could not write the release files: %s" % e)
-        label = getattr(self, "label", "latest")
-        log(self.window, "Release %s created%s: %s" % (tag, {"pre": " (pre-release)", "none": " (no label)"}.get(label, ""), rel.get("html_url", "")))
+        log(self.window, "Finished, release %s created: %s" % (tag, rel.get("html_url", "")))
         ui(sublime.status_message, "GitHub Light: release %s created" % tag)
         mode = setting(self.window, "moving_tag")
         if mode == "ask":
@@ -1504,12 +1708,15 @@ def move_tag(window, api, name, sha):
 class GhlMoveTagCommand(sublime_plugin.WindowCommand):
     """Create or move a tag (such as v1) to the branch head; the name follows the moving_tag setting, or is asked for."""
 
+    def is_enabled(self):
+        return project_window(self.window)
+
     def run(self):
         p = prepare(self.window)
         if not p:
             return
         api, folder = p
-        started(self.window, "Move Tag")
+        started(self.window, "Move Tag", panel_only=True)
         run_async(lambda: self.work(api))
 
     def work(self, api):

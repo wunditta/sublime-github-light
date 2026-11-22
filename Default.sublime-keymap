@@ -10,8 +10,10 @@
     // { "keys": [""], "command": "ghl_open_online", "args": {"kind": "blame"} },
     // { "keys": [""], "command": "ghl_open_online", "args": {"kind": "history"} },
     // { "keys": [""], "command": "ghl_diff" },
+    // { "keys": [""], "command": "ghl_diff_unsaved" },
     // { "keys": [""], "command": "ghl_release" },
     // { "keys": [""], "command": "ghl_move_tag" },
+    // { "keys": [""], "command": "ghl_new_project" },
     // { "keys": [""], "command": "ghl_settings" },
     // In a "Release notes" tab: Ctrl+Enter or Ctrl+S (Cmd on macOS) creates the release (internal, keep as it is)
     { "keys": ["primary+enter"], "command": "ghl_release_notes_done",

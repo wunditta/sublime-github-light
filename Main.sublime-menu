@@ -6,20 +6,26 @@
                 "caption": "GitHub Light",
                 "id": "github-light",
                 "children": [
+                    { "caption": "Diff Unsaved Changes…", "command": "ghl_diff_unsaved" },
+                    { "caption": "Show Project Changes…", "command": "ghl_status" },
+                    { "caption": "File Review", "id": "github-light-main-review",
+                      "children": [
+                            { "caption": "Diff GitHub and Local in Sublime", "command": "ghl_diff" },
+                            { "caption": "View on GitHub", "command": "ghl_open_online", "args": {"kind": "blob"} },
+                            { "caption": "Blame on GitHub", "command": "ghl_open_online", "args": {"kind": "blame"} },
+                            { "caption": "History on GitHub", "command": "ghl_open_online", "args": {"kind": "history"} },
+                        ]
+                    },
+                    { "caption": "-" },
                     { "caption": "Sync", "command": "ghl_sync" },
                     { "caption": "Download", "command": "ghl_download" },
                     { "caption": "Commit Current File", "command": "ghl_commit", "args": {"scope": "current"} },
                     { "caption": "Commit All", "command": "ghl_commit", "args": {"scope": "all"} },
-                    { "caption": "Status", "command": "ghl_status" },
-                    { "caption": "-" },
-                    { "caption": "View Online", "command": "ghl_open_online", "args": {"kind": "blob"} },
-                    { "caption": "Blame Online", "command": "ghl_open_online", "args": {"kind": "blame"} },
-                    { "caption": "History Online", "command": "ghl_open_online", "args": {"kind": "history"} },
-                    { "caption": "Diff File", "command": "ghl_diff" },
                     { "caption": "-" },
                     { "caption": "Create Release…", "command": "ghl_release" },
                     { "caption": "Move Tag…", "command": "ghl_move_tag" },
                     { "caption": "-" },
+                    { "caption": "New Project…", "command": "ghl_new_project" },
                     { "caption": "Settings", "command": "ghl_settings" }
                 ]
             }

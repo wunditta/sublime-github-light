@@ -8,9 +8,20 @@
     // The branch for file transfer.
     "branch": "main",
 
-    // Local folder holding the working copy of the repository. Empty = the first folder of the project (the top one in
-    // the side bar). Absolute or relative path (a relative path is taken from the folder holding the project file).
-    "folder": "",
+    // The repo folder: the local working copy of the repository, what is synced. Empty = the first folder of the project
+    // (the top one in the side bar). Absolute or relative path (a relative path is taken from the folder holding the
+    // project file); New Project creates the subfolder "repo" and sets this.
+    "repo_folder": "",
+
+    // The repo folder as its own entry in the side bar (above the project folder), so it stands out:
+    //     false = nothing is touched
+    //     true = the entry is added and the project folder hides the repo folder (folder_exclude_patterns)
+    //     "duplicate" = like above, but the project folder shows it too.
+    // This does not take effect immediately in some cases. Just restart Sublime to update.
+    // Existing entries are never moved or removed (set it to false and delete the entry yourself to undo).
+    "promote_repo_folder": false,
+    // Appended to the promoted folder's name; empty = the plain folder name.
+    "promoted_folder_badge": "\u2605",
 
     // Local folder names, which stand for differently named folders on GitHub (only first folder level).
     // This is e.g. necessary if you use an AI agent, which is not allowed to write to a local folder `.github`.
@@ -46,7 +57,8 @@
     //   "always": Sync, Download and Commit delete and overwrite without asking. In case of a conflict the newer is kept, the
     //             older is deleted. Backup: yes
     //   "chaos":  Like "always". No backup!
-    // Backup: a local file is copied into the folder "_backup" next to the state file before it is deleted or overwritten
+    // Backup: a local file is copied into the folder "_backup" beside the project file (without a project file: inside the
+    // repo folder) before it is deleted or overwritten
     // (on GitHub the history is the backup). Files never synced are never deleted. The old name "delete_files" is still read.
     "conflict_and_delete_files": "ask",
 
@@ -93,11 +105,11 @@
     // and binds it to messages.json. Sublime's Package Control shows this to users of a Sublime Text package after an upgrade.
     "sublime_version_files": false,
 
-    // Where GitHub Light writes its output (the plan with every file, the results, errors):
+    // Where GitHub Light writes its output (Sync, Download, Commit, Show Project Changes):
     //   "console": the output panel, shown when something is written (default)
     //   "tab":     a scratch-buffer tab "GitHub Light" until you close it (will not ask for save)
     //   "none":    nothing is shown (the output still goes to the panel, open it by hand if needed)
     // Note: it is strongly recommended to keep the output visible, as it is the only source of detailed information about the
-    // status of the files. The old setting "show_panel_on_output" (true/false) is still read.
+    // status of the files.
     "output_results": "console",
 }

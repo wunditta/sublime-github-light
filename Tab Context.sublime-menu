@@ -1,0 +1,15 @@
+[
+    { "caption": "-", "id": "github-light-tab" },
+    { "caption": "Diff Unsaved Changes…", "command": "ghl_diff_unsaved", "args": {"context": true} },
+    { "caption": "GitHub: Show Project Changes…", "command": "ghl_status", "args": {"context": true} },
+    { "caption": "GitHub: File Review", "id": "github-light-tab-review",
+      "children": [
+            { "caption": "Diff GitHub and Local in Sublime", "command": "ghl_diff", "args": {"context": true} },
+            { "caption": "View on GitHub", "command": "ghl_open_online", "args": {"kind": "blob", "context": true} },
+            { "caption": "Blame on GitHub", "command": "ghl_open_online", "args": {"kind": "blame", "context": true} },
+            { "caption": "History on GitHub", "command": "ghl_open_online", "args": {"kind": "history", "context": true} }
+        ]
+    },
+    { "caption": "-" },
+    { "caption": "GitHub: Commit File", "command": "ghl_commit", "args": {"scope": "current", "context": true} },
+]

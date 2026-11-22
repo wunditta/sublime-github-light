@@ -1,13 +1,19 @@
 [
     { "caption": "-", "id": "github-light-side-bar" },
+    { "caption": "Diff Unsaved Changes…", "command": "ghl_diff_unsaved", "args": {"files": []} },
+    { "caption": "GitHub: Show Project Changes…", "command": "ghl_status", "args": {"side_bar": true} },
+    { "caption": "GitHub: File Review", "id": "github-light-review",
+      "children": [
+            { "caption": "Diff GitHub and Local in Sublime", "command": "ghl_diff", "args": {"files": []} },
+            { "caption": "View on GitHub", "command": "ghl_open_online", "args": {"kind": "blob", "files": []} },
+            { "caption": "Blame on GitHub", "command": "ghl_open_online", "args": {"kind": "blame", "files": []} },
+            { "caption": "History on GitHub", "command": "ghl_open_online", "args": {"kind": "history", "files": []} }
+        ]
+    },
+    { "caption": "-" },
     { "caption": "GitHub: Sync Folder", "command": "ghl_sync", "args": {"dirs": []} },
     { "caption": "GitHub: Commit Folder", "command": "ghl_commit", "args": {"dirs": []} },
-    { "command": "ghl_commit", "args": {"files": []} },
     { "caption": "GitHub: Download Folder", "command": "ghl_download", "args": {"dirs": []} },
+    { "command": "ghl_commit", "args": {"files": []} },
     { "command": "ghl_download", "args": {"files": []} },
-    { "caption": "GitHub: Status", "command": "ghl_status" },
-    { "caption": "GitHub: History", "command": "ghl_open_online", "args": {"kind": "history", "files": []} },
-    { "caption": "GitHub: Diff File", "command": "ghl_diff", "args": {"files": []} },
-    { "caption": "-" },
-    { "caption": "GitHub: New Project below…", "command": "ghl_new_project", "args": {"dirs": []} }
 ]
