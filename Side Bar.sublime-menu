@@ -1,8 +1,9 @@
 [
     { "caption": "-", "id": "github-light-side-bar" },
     { "caption": "Diff Unsaved Changes…", "command": "ghl_diff_unsaved", "args": {"files": []} },
-    { "caption": "GitHub: Show Project Changes…", "command": "ghl_status", "args": {"side_bar": true} },
-    { "caption": "GitHub: File Review", "id": "github-light-review",
+    { "caption": "Revert File", "command": "ghl_revert_file", "args": {"files": []} },
+    { "caption": "Show GitHub Sync Status…", "command": "ghl_status", "args": {"side_bar": true} },
+    { "caption": "File Review on GitHub", "id": "github-light-review",
       "children": [
             { "caption": "Diff GitHub and Local in Sublime", "command": "ghl_diff", "args": {"files": []} },
             { "caption": "View on GitHub", "command": "ghl_open_online", "args": {"kind": "blob", "files": []} },
@@ -11,9 +12,9 @@
         ]
     },
     { "caption": "-" },
-    { "caption": "GitHub: Sync Folder", "command": "ghl_sync", "args": {"dirs": []} },
-    { "caption": "GitHub: Commit Folder", "command": "ghl_commit", "args": {"dirs": []} },
-    { "caption": "GitHub: Download Folder", "command": "ghl_download", "args": {"dirs": []} },
-    { "command": "ghl_commit", "args": {"files": []} },
-    { "command": "ghl_download", "args": {"files": []} },
+    { "caption": "Sync Folder with GitHub", "command": "ghl_sync", "args": {"dirs": []} },
+    { "caption": "Commit Folder to GitHub", "command": "ghl_commit", "args": {"dirs": []} },
+    { "caption": "Download Folder from GitHub", "command": "ghl_download", "args": {"dirs": []} },
+    { "command": "ghl_commit", "args": {"files": [], "one": "Commit File to GitHub", "many": "Commit Files to GitHub"} },
+    { "command": "ghl_download", "args": {"files": [], "one": "Download File from GitHub", "many": "Download Files from GitHub"} }
 ]

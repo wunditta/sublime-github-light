@@ -38,11 +38,22 @@ DEFAULTS = {
 
 # ---------------------------------------------------------------- settings and paths
 
-def setting(window, key):
-    """Project setting ("settings": {"github_light": {...}}), else package setting, else default."""
+PER_REPO_KEYS = ("repository", "repo_folder", "branch", "sublime_version_files", "release_label", "moving_tag", "ask_release_details")
+
+
+def project_block(window):
+    if window is None:
+        return {}
+    return ((window.project_data() or {}).get("settings") or {}).get(PROJECT_KEY) or {}
+
+
+def setting(window, key, repo=None):
+    """The repository's entry (repo: a dict of the project's "repositories" list), else the project's github_light block,
+    else the package (user) settings, else the default."""
+    if repo and key in repo:
+        return repo[key]
     if window is not None:
-        pd = window.project_data() or {}
-        proj = (pd.get("settings") or {}).get(PROJECT_KEY) or {}
+        proj = project_block(window)
         if key in proj:
             return proj[key]
     s = sublime.load_settings(SETTINGS_FILE)
@@ -51,9 +62,63 @@ def setting(window, key):
     return DEFAULTS.get(key)
 
 
-def sync_folder(window):
-    """The local working copy: 'folder' relative to the project file; empty = the first folder in the side bar."""
-    f = setting(window, "repo_folder") or ""
+def repos(window):
+    """The project's repositories: the entries of the "repositories" list (each a dict of per-repository settings, any key
+    allowed), else one entry - the block itself, the one-repository form. Sorted by repository name."""
+    lst = project_block(window).get("repositories")
+    entries = [e for e in lst if isinstance(e, dict)] if isinstance(lst, list) and lst else [{}]
+    return sorted(entries, key=lambda e: str(setting(window, "repository", e) or setting(window, "repo_folder", e) or "").lower())
+
+
+def multi(window):
+    return len(repos(window)) > 1
+
+
+def repo_name(window, repo):
+    return str(setting(window, "repository", repo) or "").strip().strip("/") or os.path.basename(sync_folder(window, repo) or "") or "?"
+
+
+def repo_for(window, path):
+    """The repository whose folder holds path (the deepest one), else None."""
+    best, best_len = None, -1
+    for r in repos(window):
+        folder = sync_folder(window, r)
+        if folder and inside(folder, path) and len(folder) > best_len:
+            best, best_len = r, len(folder)
+    return best
+
+
+def choose_repo(window, then, title="Repository:"):
+    """then(repo) for the project's single repository, else after a quick panel listing them alphabetically."""
+    rs = repos(window)
+    if len(rs) == 1:
+        return then(rs[0])
+    items = [[repo_name(window, r), sync_folder(window, r) or ""] for r in rs]
+    sublime.set_timeout(lambda: window.show_quick_panel(items, lambda i: then(rs[i]) if i >= 0 else None, placeholder=title), 0)
+
+
+def repo_then(window, then, files=None, dirs=None, group=None, index=None):
+    """The repository a command means: the one holding the clicked files / folder (side bar), the clicked tab or the
+    active file; else the single one, else the quick panel. then(repo)."""
+    path = None
+    if files:
+        path = files[0]
+    elif dirs:
+        path = dirs[0]
+    else:
+        path = menu_file(window, None, group, index)
+    r = repo_for(window, path) if path else None
+    if r is not None:
+        return then(r)
+    choose_repo(window, then)
+
+
+def sync_folder(window, repo=None):
+    """The local working copy of a repository: its 'repo_folder' relative to the project file; empty = the first folder in
+    the side bar. repo None: the project's first repository (the only one in the one-repository form)."""
+    if repo is None:
+        repo = repos(window)[0]
+    f = setting(window, "repo_folder", repo) or ""
     if not f:
         if window is not None and window.folders():
             return os.path.normpath(window.folders()[0])
@@ -249,12 +314,14 @@ class ApiError(Exception):
 
 
 class Api(object):
-    def __init__(self, window):
-        self.repo = (setting(window, "repository") or "").strip().strip("/")
-        self.branch = (setting(window, "branch") or "main").strip()
-        self.token = (setting(window, "token") or "").strip()
-        if not self.repo or "/" not in self.repo:
-            raise ApiError(0, "No repository set - put \"repository\": \"owner/name\" into the project settings", "")
+    def __init__(self, window, entry=None, need_repo=True):
+        self.window = window
+        self.entry = entry if entry is not None else repos(window)[0]       # the repository's settings entry
+        self.repo = (setting(window, "repository", self.entry) or "").strip().strip("/")
+        self.branch = (setting(window, "branch", self.entry) or "main").strip()
+        self.token = (setting(window, "token", self.entry) or "").strip()
+        if need_repo and (not self.repo or "/" not in self.repo):
+            raise ApiError(0, "No repository set - put \"repository\": \"owner/name\" into the project settings (or use Add Repository)", "")
         if not self.token:
             raise ApiError(0, "No token - put \"token\": \"<fine-grained personal access token>\" into the User settings "
                               "(Preferences > Package Settings > GitHub Light > Settings)", "")
@@ -369,9 +436,9 @@ class Api(object):
 
 # ---------------------------------------------------------------- helpers
 
-def ask_mode(window):
+def ask_mode(window, repo=None):
     """ask_release_details: "all" (title and notes), "notes" (title = tag, notes tab), "never"; true/false of old files are accepted"""
-    v = setting(window, "ask_release_details")
+    v = setting(window, "ask_release_details", repo)
     if v is True:
         return "all"
     if v is False or v is None:
@@ -401,14 +468,14 @@ def ui(fn, *args):
     sublime.set_timeout(lambda: fn(*args), 0)
 
 
-def prepare(window):
-    """(api, folder) or None after an error message"""
-    folder = sync_folder(window)
+def prepare(window, repo=None):
+    """(api, folder) of a repository (None: the project's first / only one) or None after an error message"""
+    folder = sync_folder(window, repo)
     if not folder:
         error("No repo folder - open a project or a folder first")
         return None
     try:
-        api = Api(window)
+        api = Api(window, repo)
     except ApiError as e:
         error(str(e))
         return None
@@ -477,9 +544,9 @@ def latest_version(api, prefix):
     return max(versions) if versions else None
 
 
-def moving_tag_name(window, prefix, version, mode=None):
+def moving_tag_name(window, prefix, version, mode=None, repo=None):
     """the moving tag for a version per the moving_tag setting: "major" -> v1, "minor" -> v1.2, other text -> that name, "" -> None"""
-    mode = setting(window, "moving_tag") if mode is None else mode
+    mode = setting(window, "moving_tag", repo) if mode is None else mode
     if not mode or mode == "ask":
         return None
     if mode == "major":
@@ -561,9 +628,11 @@ def mode(window):
 
 
 def backup_root(window, folder):
-    """The _backup folder: beside the project file, or inside the repo folder when there is no project file."""
+    """The _backup folder: beside the project file, or inside the repo folder when there is no project file; with
+    several repositories a subfolder named after the repo folder keeps them apart."""
     pf = window.project_file_name() if window is not None else None
-    return os.path.join(os.path.dirname(pf) if pf else folder, BACKUP_DIR)
+    root = os.path.join(os.path.dirname(pf) if pf else folder, BACKUP_DIR)
+    return os.path.join(root, os.path.basename(folder)) if (pf and multi(window)) else root
 
 
 def backup(window, folder, lp):
@@ -935,8 +1004,8 @@ def apply_plan(window, api, folder, plan, message):
     ui(sublime.status_message, "GitHub Light: %s %s" % (title.lower(), "failed" if errors else "finished"))
 
 
-def start(window, op, limit=None):
-    p = prepare(window)
+def start(window, op, limit=None, repo=None):
+    p = prepare(window, repo)
     if not p:
         return
     api, folder = p
@@ -949,14 +1018,14 @@ def start(window, op, limit=None):
         save_state(folder, plan.state)                        # adopted identical files, dropped stale entries
         ui(review, window, api, folder, plan)
     os.makedirs(folder, exist_ok=True)
-    started(window, OP_TITLE[op])
+    started(window, "%s (%s)" % (OP_TITLE[op], api.repo))
     run_async(work)
 
 
-def side_bar_limit(window, files=None, dirs=None):
+def side_bar_limit(window, files=None, dirs=None, folder=None):
     """A predicate on (remote path, local path) for the files or the folder clicked in the side bar; None for the whole
     folder. Compares local absolute paths, case-normalised (the same test is_visible uses). Returns (limit, error text)."""
-    folder = sync_folder(window)
+    folder = folder or sync_folder(window)
     if files:
         chosen = set(os.path.normcase(os.path.normpath(f)) for f in files if f and folder and inside(folder, f) and os.path.isfile(f))
         if not chosen:
@@ -974,15 +1043,17 @@ def side_bar_limit(window, files=None, dirs=None):
 
 
 def side_bar_visible(window, files=None, dirs=None):
-    # side bar: Sublime fills "files": [] / "dirs": [] with the clicked items - an EMPTY list on the other kind of item
-    folder = sync_folder(window)
+    # side bar: Sublime fills "files": [] / "dirs": [] with the clicked items - an EMPTY list on the other kind of item;
+    # the items must all lie in one repository's folder
     if (files is not None or dirs is not None) and not project_window(window):
         return False
-    if files is not None:
-        return bool(files) and all(inside(folder, f) for f in files)
-    if dirs is not None:
-        return bool(dirs) and all(inside(folder, d) for d in dirs)
-    return True
+    items = files if files is not None else dirs
+    if items is None:
+        return True
+    if not items:
+        return False
+    r = repo_for(window, items[0])
+    return r is not None and all(repo_for(window, p) is r for p in items)
 
 
 class GhlSyncCommand(sublime_plugin.WindowCommand):
@@ -990,16 +1061,21 @@ class GhlSyncCommand(sublime_plugin.WindowCommand):
     the last sync are carried over (per delete_files), conflicts are asked. From the side bar (dirs=[...]) limited
     to that folder."""
 
-    def run(self, files=None, dirs=None):
-        limit, err = side_bar_limit(self.window, files, dirs)
-        if err:
-            return error(err)
-        start(self.window, "sync", limit)
+    def run(self, files=None, dirs=None, hide_outside=False):
+        def go(repo):
+            limit, err = side_bar_limit(self.window, files, dirs, sync_folder(self.window, repo))
+            if err:
+                return error(err)
+            start(self.window, "sync", limit, repo)
+        repo_then(self.window, go, files, dirs)
 
-    def is_visible(self, files=None, dirs=None):
+    # hide_outside: a menu entry (Project menu) that disappears outside a GitHub Light project instead of greying out
+    def is_visible(self, files=None, dirs=None, hide_outside=False):
+        if hide_outside and not project_window(self.window):
+            return False
         return side_bar_visible(self.window, files, dirs)
 
-    def is_enabled(self, files=None, dirs=None):
+    def is_enabled(self, files=None, dirs=None, hide_outside=False):
         return project_window(self.window)
 
 
@@ -1008,22 +1084,26 @@ class GhlDownloadCommand(sublime_plugin.WindowCommand):
     delete_files; a file changed on both sides is asked for (suggested: the newer version). From the side bar
     (files=[...] / dirs=[...]) limited to those files or that folder."""
 
-    def run(self, files=None, dirs=None):
-        limit, err = side_bar_limit(self.window, files, dirs)
-        if err:
-            return error(err)
-        start(self.window, "download", limit)
+    def run(self, files=None, dirs=None, hide_outside=False, one=None, many=None):
+        def go(repo):
+            limit, err = side_bar_limit(self.window, files, dirs, sync_folder(self.window, repo))
+            if err:
+                return error(err)
+            start(self.window, "download", limit, repo)
+        repo_then(self.window, go, files, dirs)
 
-    def is_visible(self, files=None, dirs=None):
+    def is_visible(self, files=None, dirs=None, hide_outside=False, one=None, many=None):
+        if hide_outside and not project_window(self.window):
+            return False
         return side_bar_visible(self.window, files, dirs)
 
-    def is_enabled(self, files=None, dirs=None):
+    def is_enabled(self, files=None, dirs=None, hide_outside=False, one=None, many=None):
         return project_window(self.window)
 
-    def description(self, files=None, dirs=None):
-        # the only dynamic caption: one or several files from the side bar
+    def description(self, files=None, dirs=None, hide_outside=False, one="GitHub: Download File", many="GitHub: Download Files"):
+        # the caption for one / several clicked files comes from the menu entry's args ("one" / "many"), these are the fallback
         if files is not None:
-            return "GitHub: Download File" if len(files) <= 1 else "GitHub: Download Files"
+            return one if len(files) <= 1 else many
         return None
 
 
@@ -1032,43 +1112,49 @@ class GhlCommitCommand(sublime_plugin.WindowCommand):
     given by the side bar (files=[...]) or the files below a side bar folder (dirs=[...]), in one commit; files
     deleted here since the last sync per delete_files; a file changed on both sides is asked for."""
 
-    def run(self, scope="all", files=None, dirs=None, context=False, group=None, index=None):
+    def run(self, scope="all", files=None, dirs=None, context=False, group=None, index=None, hide_outside=False, one=None, many=None):
         w = self.window
         if scope == "current" and not files and not dirs:
             files = [menu_file(w, None, group, index)]
-        if files:
-            folder = sync_folder(w)
-            chosen = [f for f in files if f and folder and inside(folder, f) and os.path.isfile(f)]
-            dirty = [v for v in w.views() if v.is_dirty() and v.file_name() in chosen]
-            if dirty:
-                if not sublime.ok_cancel_dialog("%s not saved. Save and commit?" % ("The file is" if len(dirty) == 1 else "%d files are" % len(dirty)), "Save and commit"):
-                    return
-                for v in dirty:
-                    v.run_command("save")
-        limit, err = side_bar_limit(w, files, dirs)
-        if err:
-            return error(err)
-        start(w, "commit", limit)
 
-    def is_enabled(self, scope="all", files=None, dirs=None, context=False, group=None, index=None):
+        def go(repo):
+            folder = sync_folder(w, repo)
+            if files:
+                chosen = [f for f in files if f and folder and inside(folder, f) and os.path.isfile(f)]
+                dirty = [v for v in w.views() if v.is_dirty() and v.file_name() in chosen]
+                if dirty:
+                    if not sublime.ok_cancel_dialog("%s not saved. Save and commit?" % ("The file is" if len(dirty) == 1 else "%d files are" % len(dirty)), "Save and commit"):
+                        return
+                    for v in dirty:
+                        v.run_command("save")
+            limit, err = side_bar_limit(w, files, dirs, folder)
+            if err:
+                return error(err)
+            start(w, "commit", limit, repo)
+        repo_then(w, go, files, dirs)
+
+    def is_enabled(self, scope="all", files=None, dirs=None, context=False, group=None, index=None, hide_outside=False, one=None, many=None):
         if not project_window(self.window):
             return False
         if scope == "current" and not files and not dirs:
-            return inside(sync_folder(self.window), menu_file(self.window, None, group, index))
+            return repo_for(self.window, menu_file(self.window, None, group, index)) is not None
         return True
 
     # side bar: Sublime fills "files": [] / "dirs": [] with the clicked items - an EMPTY list on the other kind of item
-    def is_visible(self, scope="all", files=None, dirs=None, context=False, group=None, index=None):
+    def is_visible(self, scope="all", files=None, dirs=None, context=False, group=None, index=None, hide_outside=False, one=None, many=None):
+        if hide_outside and not project_window(self.window):
+            return False
         if files is not None or dirs is not None:
             return side_bar_visible(self.window, files, dirs)
         if context:
             return project_window(self.window) and self.is_enabled(scope, group=group, index=index)
         return True
 
-    def description(self, scope="all", files=None, dirs=None, context=False, group=None, index=None):
-        # the only dynamic caption (one or several files from the side bar); static captions are in the menu files
+    def description(self, scope="all", files=None, dirs=None, context=False, group=None, index=None, hide_outside=False,
+                    one="GitHub: Commit File", many="GitHub: Commit Files"):
+        # the caption for one / several clicked files comes from the menu entry's args ("one" / "many"), these are the fallback
         if files is not None:
-            return "GitHub: Commit File" if len(files) <= 1 else "GitHub: Commit Files"
+            return one if len(files) <= 1 else many
         return None
 
 
@@ -1078,32 +1164,35 @@ class GhlStatusCommand(sublime_plugin.WindowCommand):
     """What a Sync would do, in the same categories, without doing anything. Right-click menus: in the side bar on any
     item of a project window, in the text area and on a tab only for a file inside the repo folder."""
 
-    def is_visible(self, context=False, side_bar=False, group=None, index=None):
-        if side_bar:
+    def is_visible(self, context=False, side_bar=False, group=None, index=None, hide_outside=False):
+        if side_bar or hide_outside:
             return project_window(self.window)
         if context:
-            return project_window(self.window) and inside(sync_folder(self.window), menu_file(self.window, None, group, index))
+            return project_window(self.window) and repo_for(self.window, menu_file(self.window, None, group, index)) is not None
         return True
 
-    def is_enabled(self, context=False, side_bar=False, group=None, index=None):
+    def is_enabled(self, context=False, side_bar=False, group=None, index=None, hide_outside=False):
         return project_window(self.window)
 
-    def run(self, context=False, side_bar=False, group=None, index=None):
-        p = prepare(self.window)
-        if not p:
-            return
-        api, folder = p
+    def run(self, context=False, side_bar=False, group=None, index=None, hide_outside=False):
+        pairs = []                                            # every repository of the project, one block each
+        for repo in repos(self.window):
+            p = prepare(self.window, repo)
+            if not p:
+                return
+            pairs.append(p)
 
         def work():
-            try:
-                plan = make_plan(self.window, api, folder, "sync")
-            except ApiError as e:
-                return error(str(e))
-            plan.op = "status"
-            head_note = "" if plan.head == plan.state.get("head") else "   (last sync %s)" % (plan.state.get("head", "")[:7] or "never")
-            first, _, rest = plan_text(api, plan).partition("\n")
-            log(self.window, first + head_note + ("\n" + rest if rest else ""))
-        started(self.window, "Status")
+            for api, folder in pairs:
+                try:
+                    plan = make_plan(self.window, api, folder, "sync")
+                except ApiError as e:
+                    return error(str(e))
+                plan.op = "status"
+                head_note = "" if plan.head == plan.state.get("head") else "   (last sync %s)" % (plan.state.get("head", "")[:7] or "never")
+                first, _, rest = plan_text(api, plan).partition("\n")
+                log(self.window, first + head_note + ("\n" + rest if rest else ""))
+        started(self.window, "Status (%s)" % ", ".join(api.repo for api, _ in pairs))
         run_async(work)
 
 
@@ -1111,14 +1200,15 @@ class GhlOpenOnlineCommand(sublime_plugin.WindowCommand):
     """Open the current file on GitHub: kind = "blob" (view), "blame" or "history"."""
 
     def run(self, kind="blob", files=None, context=False, group=None, index=None):
-        p = prepare(self.window)
+        v = None if files else menu_view(self.window, group, index)
+        fn = menu_file(self.window, files, group, index)
+        repo = repo_for(self.window, fn)
+        if repo is None or not os.path.isfile(fn):
+            return error("The file is not inside a repo folder")
+        p = prepare(self.window, repo)
         if not p:
             return
         api, folder = p
-        v = None if files else menu_view(self.window, group, index)
-        fn = menu_file(self.window, files, group, index)
-        if not inside(folder, fn) or not os.path.isfile(fn):
-            return error("The file is not inside the repo folder \"%s\"" % folder)
         path = to_remote(self.window, os.path.relpath(fn, folder))
         line = None
         if kind in ("blob", "blame") and v and v.sel():
@@ -1127,7 +1217,7 @@ class GhlOpenOnlineCommand(sublime_plugin.WindowCommand):
 
     # the File Review submenu cannot be hidden (Sublime shows every submenu), so its items are disabled instead of hidden
     def is_enabled(self, kind="blob", files=None, context=False, group=None, index=None):
-        return project_window(self.window) and inside(sync_folder(self.window), menu_file(self.window, files, group, index))
+        return project_window(self.window) and repo_for(self.window, menu_file(self.window, files, group, index)) is not None
 
 
 def syntax_for(scope, fallback, sample=None):
@@ -1171,13 +1261,14 @@ class GhlDiffCommand(sublime_plugin.WindowCommand):
     in a scratch tab. A file with unsaved changes asks whether the current (unsaved) or the saved state is compared."""
 
     def run(self, files=None, context=False, group=None, index=None):
-        p = prepare(self.window)
+        fn = menu_file(self.window, files, group, index)
+        repo = repo_for(self.window, fn)
+        if repo is None or not os.path.isfile(fn):
+            return error("The file is not inside a repo folder")
+        p = prepare(self.window, repo)
         if not p:
             return
         api, folder = p
-        fn = menu_file(self.window, files, group, index)
-        if not inside(folder, fn) or not os.path.isfile(fn):
-            return error("The file is not inside the repo folder \"%s\"" % folder)
         view = self.window.find_open_file(fn)
         mine = None
         if view is not None and view.is_dirty():
@@ -1191,7 +1282,7 @@ class GhlDiffCommand(sublime_plugin.WindowCommand):
             with open(fn, "rb") as f:
                 mine = f.read().decode("utf-8", "replace").splitlines()
         path = to_remote(self.window, os.path.relpath(fn, folder))
-        started(self.window, "Diff")
+        started(self.window, "Diff (%s)" % api.repo)
         run_async(lambda: self.work(api, fn, path, mine))
 
     def work(self, api, fn, path, mine):
@@ -1215,7 +1306,28 @@ class GhlDiffCommand(sublime_plugin.WindowCommand):
 
     # the File Review submenu cannot be hidden (Sublime shows every submenu), so its items are disabled instead of hidden
     def is_enabled(self, files=None, context=False, group=None, index=None):
-        return project_window(self.window) and inside(sync_folder(self.window), menu_file(self.window, files, group, index))
+        return project_window(self.window) and repo_for(self.window, menu_file(self.window, files, group, index)) is not None
+
+
+class GhlRevertFileCommand(sublime_plugin.WindowCommand):
+    """Sublime's File > Revert for the clicked tab or side bar file (Sublime's own `revert` only knows the active view),
+    else the active file; enabled for a file with unsaved changes that exists on disk. Any file, no project needed."""
+
+    def target(self, files=None, group=None, index=None):
+        fn = menu_file(self.window, files, group, index)
+        v = self.window.find_open_file(fn) if fn else None
+        return v if v is not None and v.is_dirty() and os.path.isfile(fn) else None
+
+    def run(self, files=None, context=False, group=None, index=None, hide_outside=False):
+        v = self.target(files, group, index)
+        if v is not None:
+            v.run_command("revert")
+
+    def is_enabled(self, files=None, context=False, group=None, index=None, hide_outside=False):
+        return self.target(files, group, index) is not None
+
+    def is_visible(self, files=None, context=False, group=None, index=None, hide_outside=False):
+        return project_window(self.window) if hide_outside else True
 
 
 class GhlDiffUnsavedCommand(sublime_plugin.WindowCommand):
@@ -1320,7 +1432,10 @@ def commit_files(window, api, folder, paths, message):
 class GhlSettingsCommand(sublime_plugin.WindowCommand):
     """Settings: default settings (read-only) | user settings | project file, when a project is open; else Sublime's two panes."""
 
-    def run(self):
+    def is_visible(self, hide_outside=False):
+        return project_window(self.window) if hide_outside else True
+
+    def run(self, hide_outside=False):
         open_settings(self.window, "GitHub Light", SETTINGS_FILE)
 
 
@@ -1373,10 +1488,13 @@ def make_read_only(view, tries=50):
 
 class GhlNewProjectCommand(sublime_plugin.WindowCommand):
     """Menu bar: a project file for GitHub Light in a folder chosen (or created) in the system's folder dialog, named
-    after the folder, opened with its settings. The repository on GitHub is not created. Sublime 3 has no folder
-    dialog: an input panel asks for the path."""
+    after the folder; the project is opened and Add Repository started (the settings instead when no token is set yet).
+    The repository on GitHub is not created. Sublime 3 has no folder dialog: an input panel asks for the path."""
 
-    def run(self):
+    def is_visible(self, hide_outside=False):
+        return project_window(self.window) if hide_outside else True
+
+    def run(self, hide_outside=False):
         if hasattr(sublime, "select_folder_dialog"):
             sublime.select_folder_dialog(lambda folder: folder and self.create(folder))
         else:
@@ -1391,20 +1509,25 @@ class GhlNewProjectCommand(sublime_plugin.WindowCommand):
         project = os.path.join(folder, name + ".sublime-project")
         if os.path.exists(project):
             return sublime.error_message("GitHub Light: %s exists already" % project)
-        os.makedirs(os.path.join(folder, "repo"), exist_ok=True)   # the repo folder; _backup comes beside the project file
+        os.makedirs(folder, exist_ok=True)
         with open(project, "w", encoding="utf-8") as f:
             f.write(PROJECT_TEMPLATE)
         sublime.run_command("new_window")
         w = sublime.active_window()
         w.run_command("open_project_or_workspace", {"file": project})
 
-        def settings(tries=20):
+        def go(tries=20):
             if not w.project_file_name():
                 if tries > 0:
-                    sublime.set_timeout(lambda: settings(tries - 1), 100)
+                    sublime.set_timeout(lambda: go(tries - 1), 100)
                 return
-            w.run_command("ghl_settings")
-        sublime.set_timeout(settings, 200)
+            if (setting(w, "token") or "").strip():
+                w.run_command("ghl_add_repository")
+            else:
+                sublime.message_dialog("GitHub Light: put your token into the user settings (middle column) first, then run "
+                                       "GitHub > Add Repository… to add the project's repository.")
+                w.run_command("ghl_settings")
+        sublime.set_timeout(go, 200)
 
 
 PROJECT_TEMPLATE = """{
@@ -1418,17 +1541,194 @@ PROJECT_TEMPLATE = """{
         {
             // Settings of GitHub Light for this project. Any key of the package settings (left column of
             // Tools > GitHub Light > Settings) can be set here and overrides it for this project - except "token".
-            "repository": "owner/name",
-            // The repo folder (what is synced), relative to this file; backups of overwritten or deleted files go to _backup beside this file.
-            "repo_folder": "repo",
-            // The repo folder as its own entry in the side bar: false, true (the root folder hides it) or "duplicate" (the
-            // root shows it too); the badge is appended to its name.
-            "promote_repo_folder": false,
-            "promoted_folder_badge": "\u2605",
+            // "repository" and "repo_folder" are written by GitHub > Add Repository...; backups of overwritten or
+            // deleted files go to _backup beside this file.
         }
     }
 }
 """
+
+_add = {}        # Add Repository: per window the token's login and the repositories GitHub lists, fetched before the input opens
+
+
+class OwnerInputHandler(sublime_plugin.TextInputHandler):
+    def __init__(self, ctx):
+        self.ctx = ctx
+
+    def name(self):
+        return "owner"
+
+    def placeholder(self):
+        return "the repository's owner (user or organisation)"
+
+    def initial_text(self):
+        return self.ctx.get("owner") or ""
+
+    def validate(self, text, *rest):
+        return bool(text.strip()) and "/" not in text
+
+    def description(self, text):
+        return text.strip()
+
+    def next_input(self, args):
+        return RepoListInputHandler(self.ctx, args["owner"].strip())
+
+
+class RepoListInputHandler(sublime_plugin.ListInputHandler):
+    def __init__(self, ctx, owner):
+        self.ctx, self.owner = ctx, owner
+
+    def name(self):
+        return "repo"
+
+    def placeholder(self):
+        return "the repository, or a new one"
+
+    def list_items(self):
+        names = self.ctx["repos"].get(self.owner.lower())
+        if names is None:                                  # an owner the token's list does not cover: its public repositories
+            names = []
+            try:
+                for page in range(1, 4):
+                    chunk = self.ctx["api"].call("GET", "/users/%s/repos?per_page=100&page=%d" % (urllib.parse.quote(self.owner), page))
+                    names += [r["name"] for r in chunk if r.get("name")]
+                    if len(chunk) < 100:
+                        break
+            except ApiError:
+                pass
+            self.ctx["repos"][self.owner.lower()] = names
+        return [("New repository…", "")] + [(n, n) for n in sorted(names, key=str.lower)]
+
+    def description(self, value, text):
+        return short_crumb(value) if value else "new"
+
+    def next_input(self, args):
+        if not args.get("repo"):
+            return NewRepoNameInputHandler()
+        return RepoFolderInputHandler(args["repo"])
+
+
+class NewRepoNameInputHandler(sublime_plugin.TextInputHandler):
+    def name(self):
+        return "name"
+
+    def placeholder(self):
+        return "the new repository's name"
+
+    def validate(self, text, *rest):
+        t = text.strip()
+        return bool(t) and re.fullmatch(r"[\w.-]+", t) is not None
+
+    def description(self, text):
+        return short_crumb(text)
+
+    def next_input(self, args):
+        return RepoFolderInputHandler(args["name"].strip())
+
+
+class RepoFolderInputHandler(sublime_plugin.TextInputHandler):
+    def __init__(self, default):
+        self.default = default
+
+    def name(self):
+        return "folder"
+
+    def placeholder(self):
+        return "the repo folder, relative to the project file"
+
+    def initial_text(self):
+        return self.default
+
+    def validate(self, text, *rest):
+        return bool(text.strip())
+
+    def description(self, text):
+        return short_crumb(text)
+
+
+class GhlAddRepositoryCommand(sublime_plugin.WindowCommand):
+    """Add Repository...: a repository of the project through the command input - owner, repository (the owner's
+    repositories on GitHub, or a new one), its name for a new one, the repo folder. Writes the settings, creates the
+    folder; an existing repository offers a Download, a new one is created on GitHub by the user (the page is opened)."""
+
+    def is_enabled(self, hide_outside=False, owner=None, repo=None, name=None, folder=None):
+        return self.window.project_file_name() is not None
+
+    def is_visible(self, hide_outside=False, owner=None, repo=None, name=None, folder=None):
+        return project_window(self.window) if hide_outside else True
+
+    def input(self, args):
+        ctx = _add.get(self.window.id())
+        if ctx and "owner" not in args:
+            return OwnerInputHandler(ctx)
+        return None
+
+    def run(self, hide_outside=False, owner=None, repo=None, name=None, folder=None):
+        w = self.window
+        ctx = _add.get(w.id())
+        if owner is None or not ctx:
+            return self.begin()
+        _add.pop(w.id(), None)
+        owner, folder = owner.strip(), (folder or "").strip()
+        new = not repo
+        full = "%s/%s" % (owner, (repo or name or "").strip())
+        base = os.path.dirname(w.project_file_name())
+        entry = {"repository": full, "repo_folder": folder}
+        pd = w.project_data() or {}
+        block = pd.setdefault("settings", {}).setdefault(PROJECT_KEY, {})
+        if isinstance(block.get("repositories"), list):
+            block["repositories"].append(entry)
+        elif (block.get("repository") or "").strip():       # the second repository: the block becomes the list
+            first = {k: block.pop(k) for k in PER_REPO_KEYS if k in block}
+            block["repositories"] = [first, entry]
+        else:
+            block.update(entry)
+        w.set_project_data(pd)
+        os.makedirs(os.path.join(base, folder), exist_ok=True)
+        log(w, "Repository %s added to the project, folder %s" % (full, folder))
+        if new:
+            sublime.set_clipboard(full.split("/", 1)[1])
+            if sublime.ok_cancel_dialog("The repository %s is written to the project settings and its name copied to the clipboard.\n\n"
+                                        "GitHub Light does not create repositories: the page for creating one is opened in the browser now - "
+                                        "paste the name there and create it (empty or with a README), then Commit from here.\n\nProceed?"
+                                        % full, "Proceed"):
+                webbrowser.open("https://github.com/new")
+            return
+        after = lambda r: start(w, "download", None, r)
+        if sublime.ok_cancel_dialog("Repository %s added, folder \"%s\".\n\nDownload it now?" % (full, folder), "Download"):
+            for r in repos(w):
+                if setting(w, "repository", r) == full and setting(w, "repo_folder", r) == folder:
+                    return after(r)
+
+    def begin(self):
+        w = self.window
+        if not w.project_file_name():
+            return error("Add Repository needs an open project (a .sublime-project file)")
+        try:
+            api = Api(w, {}, need_repo=False)
+        except ApiError as e:
+            return error(str(e))
+        first = repos(w)[0]
+        owner = (setting(w, "repository", first) or "").split("/")[0].strip()
+        sublime.status_message("GitHub Light: fetching your repositories…")
+
+        def work():
+            found = {}
+            try:
+                login = api.call("GET", "/user").get("login") or ""
+                for page in range(1, 6):
+                    chunk = api.call("GET", "/user/repos?per_page=100&page=%d&sort=full_name" % page)
+                    for r in chunk:
+                        o = (r.get("owner") or {}).get("login") or ""
+                        found.setdefault(o.lower(), []).append(r.get("name") or "")
+                    if len(chunk) < 100:
+                        break
+            except ApiError as e:
+                return error(str(e))
+            _add[w.id()] = {"api": api, "owner": owner or login, "login": login, "repos": found}
+            ui(w.run_command, "show_overlay", {"overlay": "command_palette", "command": "ghl_add_repository"})
+        run_async(work)
+
 
 _pending_release = None      # the release waiting for its notes tab (one at a time)
 
@@ -1499,11 +1799,12 @@ def promote_folder(window, folder, mode, badge, top):
 def check_promoted_folder(window):
     if window is None or not project_window(window):
         return
-    mode = setting(window, "promote_repo_folder")
-    if mode not in (True, "duplicate"):
-        return
-    if promote_folder(window, sync_folder(window), mode, str(setting(window, "promoted_folder_badge") or "").strip(), top=False):
-        log(window, "Project: the repo folder was added to the side bar's folders (promote_repo_folder)")
+    for repo in repos(window):
+        mode = setting(window, "promote_repo_folder", repo)
+        if mode not in (True, "duplicate"):
+            continue
+        if promote_folder(window, sync_folder(window, repo), mode, str(setting(window, "promoted_folder_badge", repo) or "").strip(), top=False):
+            log(window, "Project: the repo folder %s was added to the side bar's folders (promote_repo_folder)" % os.path.basename(sync_folder(window, repo)))
 
 
 class GhlProjectListener(sublime_plugin.EventListener):
@@ -1530,42 +1831,30 @@ class GhlReleaseNotesListener(sublime_plugin.EventListener):
             log(view.window(), "Release %s cancelled (notes tab closed)" % tag)
 
 
-class GhlReleaseCommand(sublime_plugin.WindowCommand):
-    """Create a tag and a release on the branch head; the next version is chosen as patch, minor or major."""
+SEMVER_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
+_release = {}            # the release being prepared: api, prefix, current, notes, folder (between the fetch and the command input)
+_movetag = {}            # likewise for Move Tag: api, prefix, current, sha
 
-    def is_enabled(self):
-        return project_window(self.window)
 
-    def run(self):
-        p = prepare(self.window)
-        if not p:
-            return
-        api, folder = p
-        self.folder = folder
-        self.notes = None                                # the Unreleased section (release_notes_from_changelog)
-        if setting(self.window, "release_notes_from_changelog"):
-            self.notes = read_unreleased(folder)
-            if self.notes is None:
-                return error("No \"Unreleased\" section found in %s (expected a heading \"## [Unreleased]\")" % os.path.join(folder, CHANGELOG))
-        started(self.window, "Create Release", panel_only=True)
-        if self.notes is not None:
-            if not self.notes:
-                if not sublime.ok_cancel_dialog("The \"Unreleased\" section of %s is empty.\n\nRelease anyway (empty notes%s)?"
-                                                % (CHANGELOG, "" if ask_mode(self.window) != "never" else ", the section is closed empty"), "Release anyway"):
-                    return log(self.window, "Release cancelled: the Unreleased section of %s is empty" % CHANGELOG)
-            else:
-                log(self.window, "Release notes from %s:\n%s" % (CHANGELOG, "\n".join("  " + l for l in self.notes.splitlines())))
-        run_async(lambda: self.work(api))
+def short_crumb(text, keep=15):
+    text = (text or "").strip()
+    return text if len(text) <= keep else text[:keep] + "…"
 
-    def work(self, api):
-        prefix = setting(self.window, "tag_prefix") or ""
-        try:
-            current = latest_version(api, prefix)
-        except ApiError as e:
-            return error(str(e))
-        ui(self.choose, api, prefix, current)
 
-    def choose(self, api, prefix, current):
+class VersionInputHandler(sublime_plugin.ListInputHandler):
+    """Create Release: the next version as patch / minor / major, or a tag typed in."""
+
+    def __init__(self, ctx):
+        self.ctx = ctx
+
+    def name(self):
+        return "version"
+
+    def placeholder(self):
+        return "the version to release"
+
+    def list_items(self):
+        prefix, current = self.ctx["prefix"], self.ctx["current"]
         if current is None:
             options = [("1.0.0", "First release (no version tag yet)")]
         else:
@@ -1573,32 +1862,152 @@ class GhlReleaseCommand(sublime_plugin.WindowCommand):
             options = [("%d.%d.%d" % (ma, mi, pa + 1), "Patch - backward compatible bug fixes"),
                        ("%d.%d.0" % (ma, mi + 1), "Minor - new functionality, backward compatible"),
                        ("%d.0.0" % (ma + 1), "Major - incompatible changes")]
-        items = [[prefix + v, d + ("" if current is None else "  (current %s%d.%d.%d)" % ((prefix,) + current))] for v, d in options]
+        note = "" if current is None else "  (current %s%d.%d.%d)" % ((prefix,) + current)
+        if hasattr(sublime, "ListInputItem"):
+            return [sublime.ListInputItem(prefix + v, v, details=d + note) for v, d in options] + \
+                   [sublime.ListInputItem("Specify a different tag…", "")]
+        return [(prefix + v, v) for v, d in options] + [("Specify a different tag…", "")]
 
-        def picked(i):
-            if i < 0:
-                return
-            tag = items[i][0]
-            version = tuple(int(x) for x in options[i][0].split("."))
-            label = setting(self.window, "release_label") or "ask"
-            if label in ("latest", "pre", "none"):
-                return self.after_label(api, prefix, version, tag, label)
-            labels = [["Latest release", "Marked as the latest release of the repository"],
-                      ["Pre-release", "Marked as a pre-release; the latest release stays as it is"],
-                      ["No label", "Neither latest nor pre-release"]]
-            sublime.set_timeout(lambda: self.window.show_quick_panel(
-                labels, lambda j: self.after_label(api, prefix, version, tag, ("latest", "pre", "none")[j]) if j >= 0 else None), 150)
-        self.window.show_quick_panel(items, picked)
+    def description(self, value, text):
+        return (self.ctx["prefix"] + value) if value else "Specify tag"
 
-    def after_label(self, api, prefix, version, tag, label):
-        self.label = label
-        mode = ask_mode(self.window)
+    def next_input(self, args):
+        return TagInputHandler(self.ctx["prefix"], "version") if not args.get("version") else None
+
+
+class TagInputHandler(sublime_plugin.TextInputHandler):
+    """A tag typed in, prefilled with the prefix."""
+
+    def __init__(self, prefix, name="tag"):
+        self.prefix, self._name = prefix, name
+
+    def name(self):
+        return self._name
+
+    def placeholder(self):
+        return "the tag"
+
+    def initial_text(self):
+        return self.prefix
+
+    def validate(self, text, *rest):
+        t = text.strip()
+        return bool(t) and t != self.prefix and " " not in t
+
+    def description(self, text):
+        return short_crumb(text)
+
+
+class LabelInputHandler(sublime_plugin.ListInputHandler):
+    def name(self):
+        return "label"
+
+    def placeholder(self):
+        return "the release's label"
+
+    def list_items(self):
+        return [("Latest release", "latest"), ("Pre-release", "pre"), ("No label", "none")]
+
+    def description(self, value, text):
+        return {"latest": "latest", "pre": "pre-release", "none": "no label"}.get(value, text)
+
+
+class TitleInputHandler(sublime_plugin.TextInputHandler):
+    def __init__(self, tag):
+        self.tag = tag
+
+    def name(self):
+        return "title"
+
+    def placeholder(self):
+        return "the release's title"
+
+    def initial_text(self):
+        return self.tag
+
+    def description(self, text):
+        return short_crumb(text)
+
+
+class GhlReleaseCommand(sublime_plugin.WindowCommand):
+    """Create a tag and a release on the branch head. The repository is chosen (or the file's), the current version
+    fetched, then the command input asks: version (patch / minor / major, or a tag typed in), label, title - the
+    last two only when the settings do not fix them; the notes are edited in a tab."""
+
+    def is_enabled(self, hide_outside=False, version=None, label=None, title=None):
+        return project_window(self.window)
+
+    def is_visible(self, hide_outside=False, version=None, label=None, title=None):
+        return project_window(self.window) if hide_outside else True
+
+    def input(self, args):
+        ctx = _release.get(self.window.id())
+        if not ctx:
+            return None                                    # nothing prepared yet: run() fetches first, then opens the input
+        if "version" not in args:
+            return VersionInputHandler(ctx)
+        tag = self.tag_of(ctx, args["version"])[1]
+        if "label" not in args and (setting(self.window, "release_label", ctx["api"].entry) or "ask") not in ("latest", "pre", "none"):
+            return LabelInputHandler()
+        if "title" not in args and ask_mode(self.window, ctx["api"].entry) == "all":
+            return TitleInputHandler(tag)
+        return None
+
+    def tag_of(self, ctx, value):
+        """(version tuple or None, tag) of the input's value: "1.2.3" (a chosen version) or a typed tag."""
+        prefix = ctx["prefix"]
+        value = (value or "").strip()
+        m = SEMVER_RE.fullmatch(value) or SEMVER_RE.fullmatch(value[len(prefix):] if value.startswith(prefix) else "")
+        if m:
+            v = tuple(int(x) for x in m.groups())
+            return v, prefix + "%d.%d.%d" % v
+        return None, value
+
+    def run(self, hide_outside=False, version=None, label=None, title=None):
+        ctx = _release.get(self.window.id())
+        if version is None or not ctx:
+            return repo_then(self.window, self.begin)
+        _release.pop(self.window.id(), None)
+        api, prefix = ctx["api"], ctx["prefix"]
+        self.folder, self.notes = ctx["folder"], ctx["notes"]
+        version, tag = self.tag_of(ctx, version)
+        self.label = label or setting(self.window, "release_label", api.entry) or "latest"
+        if self.label not in ("latest", "pre", "none"):
+            self.label = "latest"
+        title = (title or "").strip() or tag
+        mode = ask_mode(self.window, api.entry)
         if mode == "never":
-            return run_async(lambda: self.create(api, prefix, version, tag, tag, None))
-        if mode == "notes":
-            return sublime.set_timeout(lambda: self.body(api, prefix, version, tag, tag), 150)
-        sublime.set_timeout(lambda: self.window.show_input_panel(
-            "Release title:", tag, lambda title: self.body(api, prefix, version, tag, title), None, None), 150)
+            return run_async(lambda: self.create(api, prefix, version, tag, title, None))
+        sublime.set_timeout(lambda: self.body(api, prefix, version, tag, title), 150)
+
+    def begin(self, repo):
+        p = prepare(self.window, repo)
+        if not p:
+            return
+        api, folder = p
+        notes = None                                       # the Unreleased section (release_notes_from_changelog)
+        if setting(self.window, "release_notes_from_changelog", api.entry):
+            notes = read_unreleased(folder)
+            if notes is None:
+                return error("No \"Unreleased\" section found in %s (expected a heading \"## [Unreleased]\")" % os.path.join(folder, CHANGELOG))
+        started(self.window, "Create Release (%s)" % api.repo, panel_only=True)
+        if notes is not None:
+            if not notes:
+                if not sublime.ok_cancel_dialog("The \"Unreleased\" section of %s is empty.\n\nRelease anyway (empty notes%s)?"
+                                                % (CHANGELOG, "" if ask_mode(self.window, api.entry) != "never" else ", the section is closed empty"), "Release anyway"):
+                    return log(self.window, "Release cancelled: the Unreleased section of %s is empty" % CHANGELOG)
+            else:
+                log(self.window, "Release notes from %s:\n%s" % (CHANGELOG, "\n".join("  " + l for l in notes.splitlines())))
+        prefix = setting(self.window, "tag_prefix", api.entry) or ""
+
+        def work():
+            try:
+                current = latest_version(api, prefix)
+            except ApiError as e:
+                return error(str(e))
+            _release[self.window.id()] = {"api": api, "prefix": prefix, "current": current, "notes": notes, "folder": folder}
+            ui(self.window.run_command, "show_overlay", {"overlay": "command_palette", "command": "ghl_release"})
+        run_async(work)
 
     def body(self, api, prefix, version, tag, title):
         """The notes are edited in a scratch tab (Markdown, word wrap): Ctrl+Enter creates the release, closing the tab cancels."""
@@ -1631,7 +2040,7 @@ class GhlReleaseCommand(sublime_plugin.WindowCommand):
         """entered: the text of the notes panel, or None when the panel was not shown.
         Release notes = the entered text, else the changelog section (release_notes_from_changelog), else empty;
         sublime_version_files writes messages/<tag>.txt with the same notes."""
-        vstr = "%d.%d.%d" % version
+        vstr = "%d.%d.%d" % version if version else None
         section = self.notes or ""
         typed = entered.strip() if entered is not None else None
         notes = typed if typed is not None else section
@@ -1649,8 +2058,11 @@ class GhlReleaseCommand(sublime_plugin.WindowCommand):
                     if not ui_confirm("The release notes are empty (the changelog section was deleted in the tab).\n\nRelease anyway?", "Release anyway"):
                         return log(self.window, "Release cancelled: empty notes")
                 paths.append(release_changelog(self.folder, tag, notes if notes != section.strip() else None))
-            if setting(self.window, "sublime_version_files"):
-                paths += write_version_message(self.folder, vstr, tag, notes)
+            if setting(self.window, "sublime_version_files", api.entry):
+                if vstr:
+                    paths += write_version_message(self.folder, vstr, tag, notes)
+                else:
+                    log(self.window, "No Package Control message file: %s is not a version tag" % tag)
             if paths:
                 commit_files(self.window, api, self.folder, paths, "Release %s" % tag)
             rel = api.release(tag, title.strip() or tag, notes, getattr(self, "label", "latest"))
@@ -1663,11 +2075,13 @@ class GhlReleaseCommand(sublime_plugin.WindowCommand):
             return error("Could not write the release files: %s" % e)
         log(self.window, "Finished, release %s created: %s" % (tag, rel.get("html_url", "")))
         ui(sublime.status_message, "GitHub Light: release %s created" % tag)
-        mode = setting(self.window, "moving_tag")
+        if not version:
+            return log(self.window, "No moving tag: %s is not a version tag" % tag)
+        mode = setting(self.window, "moving_tag", api.entry)
         if mode == "ask":
             ui(self.ask_moving, api, prefix, version, sha)
         else:
-            name = moving_tag_name(self.window, prefix, version, mode)
+            name = moving_tag_name(self.window, prefix, version, mode, api.entry)
             if name:
                 run_async(lambda: move_tag(self.window, api, name, sha))
 
@@ -1689,7 +2103,7 @@ def move_tag(window, api, name, sha):
         tags = api.tags()
     except ApiError as e:
         return error(str(e))
-    prefix = setting(window, "tag_prefix") or ""
+    prefix = setting(window, "tag_prefix", api.entry) or ""
     version_re = re.compile(re.escape(prefix) + r"\d+\.\d+\.\d+")
 
     def label(commit):
@@ -1705,31 +2119,74 @@ def move_tag(window, api, name, sha):
     ui(sublime.status_message, "GitHub Light: tag %s -> %s" % (name, label(sha)))
 
 
-class GhlMoveTagCommand(sublime_plugin.WindowCommand):
-    """Create or move a tag (such as v1) to the branch head; the name follows the moving_tag setting, or is asked for."""
+class MoveTagInputHandler(sublime_plugin.ListInputHandler):
+    """Move Tag: the moving tag of the major or minor version, or a tag typed in."""
 
-    def is_enabled(self):
+    def __init__(self, ctx):
+        self.ctx = ctx
+
+    def name(self):
+        return "tag"
+
+    def placeholder(self):
+        return "the tag to create or move"
+
+    def list_items(self):
+        prefix, current = self.ctx["prefix"], self.ctx["current"]
+        items = []
+        if current:
+            items = [(moving_tag_name(None, prefix, current, "major"), moving_tag_name(None, prefix, current, "major")),
+                     (moving_tag_name(None, prefix, current, "minor"), moving_tag_name(None, prefix, current, "minor"))]
+        else:
+            items = [(prefix + "1", prefix + "1")]
+        return items + [("Specify a different tag…", "")]
+
+    def description(self, value, text):
+        return value or "Specify tag"
+
+    def next_input(self, args):
+        return TagInputHandler(self.ctx["prefix"], "tag") if not args.get("tag") else None
+
+
+class GhlMoveTagCommand(sublime_plugin.WindowCommand):
+    """Create or move a tag (such as v1) to the branch head: the repository is chosen (or the file's), then the command
+    input offers the moving tags of the current version or a tag typed in."""
+
+    def is_enabled(self, hide_outside=False, tag=None):
         return project_window(self.window)
 
-    def run(self):
-        p = prepare(self.window)
+    def is_visible(self, hide_outside=False, tag=None):
+        return project_window(self.window) if hide_outside else True
+
+    def input(self, args):
+        ctx = _movetag.get(self.window.id())
+        if ctx and "tag" not in args:
+            return MoveTagInputHandler(ctx)
+        return None
+
+    def run(self, hide_outside=False, tag=None):
+        ctx = _movetag.get(self.window.id())
+        if tag is None or not ctx:
+            return repo_then(self.window, self.begin)
+        _movetag.pop(self.window.id(), None)
+        name = tag.strip()
+        if name:
+            run_async(lambda: move_tag(self.window, ctx["api"], name, ctx["sha"]))
+
+    def begin(self, repo):
+        p = prepare(self.window, repo)
         if not p:
             return
         api, folder = p
-        started(self.window, "Move Tag", panel_only=True)
-        run_async(lambda: self.work(api))
+        started(self.window, "Move Tag (%s)" % api.repo, panel_only=True)
+        prefix = setting(self.window, "tag_prefix", api.entry) or ""
 
-    def work(self, api):
-        prefix = setting(self.window, "tag_prefix") or ""
-        try:
-            current = latest_version(api, prefix)
-            sha = api.head()
-        except ApiError as e:
-            return error(str(e))
-        mode = setting(self.window, "moving_tag")
-        name = moving_tag_name(self.window, prefix, current, mode if mode not in ("ask", "") else "major") if current else prefix + "1"
-        ui(self.ask, api, name, sha)
-
-    def ask(self, api, name, sha):
-        self.window.show_input_panel("Tag to create or move to %s:" % sha[:7], name,
-                                     lambda n: run_async(lambda: move_tag(self.window, api, n.strip(), sha)) if n.strip() else None, None, None)
+        def work():
+            try:
+                current = latest_version(api, prefix)
+                sha = api.head()
+            except ApiError as e:
+                return error(str(e))
+            _movetag[self.window.id()] = {"api": api, "prefix": prefix, "current": current, "sha": sha}
+            ui(self.window.run_command, "show_overlay", {"overlay": "command_palette", "command": "ghl_move_tag"})
+        run_async(work)

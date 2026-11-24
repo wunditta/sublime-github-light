@@ -125,11 +125,18 @@ When `sublime_version_files` is enabled, the same information is written to Pack
 3. **Project settings**: Project specific settings are typically the repository.
    ```jsonc
    {
-       "folders": [ { "path": "." } ],
+       "folders": [
+           { "path": "." }
+       ],
        "settings": {
            "github_light": {
+               // The repository with which the repo folder is synced with, as "owner/name" (e.g. "wunditta/sublime-github-light")
                "repository": "owner/repo_name",
+               // Local folder for the downloaded TTS scripts, relative to the project file.
+               // Defaults to the first listed folder above (folders)
                //"repo_folder": "",
+               // Show the script folder as its own entry at the top of the side bar (see "Settings")
+               "promote_script_folder": false,
            }
        }
    }
@@ -140,16 +147,17 @@ When `sublime_version_files` is enabled, the same information is written to Pack
 ## Usage
 
 * **Tools › GitHub Light**: main menu
+* **Project**: most important commands are appended to the Project menu (only within GitHub Light project windows)
 * **Command Palette**: shows as "GitHub Light: …".
-* **Context menus** (right-click menus on text area, tab header, side bar): depending on context and where you clicked some of the commands below are shown. Most of them only apply to files and folders in the project or repo folder.
+* **Context menus** (right-click menus on **side bar**, **text area**, and **tabs**): depending on context and where you clicked some of the commands below are shown. Most of them only apply to files and folders in the project or repo folder.
 
 | Command | What it does |
 |---|---|
 | **Diff Unsaved Changes…** | The unsaved changes of an open file against its saved state as a "diff" in a scratch tab (if you want it shown in the console use Sublime's "Show Unsaved Changes…"). |
 | **Show Project Changes…** | Is basically a simulated Sync and lists the files and the actions, which a sync would use in the output panel. This functions is useful to get an overview of what are the differences between GitHub and your local files. |
-| **Diff GitHub and Local in Sublime**<br>*(within menu item "File Review"* | Shows the difference between the local file and its version on GitHub as "diff" in a scratch tab. For unsaved files you are asked whether the current or the saved state should be compared. |
-| **View Online** / **Blame Online**<br>*(within menu item "File Review"* | Opens the current file on GitHub at the line the cursor is on. |
-| **History Online**<br>*(within menu item "File Review"* | Opens the commit history of the current file on GitHub. |
+| **Diff GitHub and Local in Sublime**<br>*(within menu item "File Review")* | Shows the difference between the local file and its version on GitHub as "diff" in a scratch tab. For unsaved files you are asked whether the current or the saved state should be compared. |
+| **View Online** / **Blame Online**<br>*(within menu item "File Review")* | Opens the current file on GitHub at the line the cursor is on. |
+| **History Online**<br>*(within menu item "File Review")* | Opens the commit history of the current file on GitHub. |
 | **Sync** | Syncs in both directions by comparing the hash patterns since the last sync, so a conflict (both sides changed) or file deletions (an already synced file is missing) can be detected reliably. If there is no hash pattern this is not possible and you need to decide which side prevails (either for all files, or per file). Note: if or when a confirmation dialog is shown, and how unclear situations should be resolved, depend on the settings `conflict_and_delete_files` and `confirm_file_transfer`, but regardless of the chosen settings, no data can be lost silently (also see *Categories, conflicts and the confirmation dialog*). |
 | **Download** | Works similar to "Sync" but only downloads files from GitHub to the repo folder. Pressing "OK" in the confirmation dialog downloads forcefully, regardless of which file is newer, or if there is an unresolved conflict (however, setting `conflict_and_delete_files` is still honored); for a safer way use "As suggested". |
 | **Commit All / Current File** | Commits the current file or all files in the repo folder in the same way as download works (you will be asked to save unsaved files first). With `ask_commit_message` you can provide one. |
@@ -165,7 +173,7 @@ When `sublime_version_files` is enabled, the same information is written to Pack
     // Settings for GitHub Light package
     // Every setting here can be overridden for all projects in the package settings, or per project in the .sublime-project file
 
-    // The repository the folder is synced with, as "owner/name" (e.g. "wunditta/sublime-github-light")
+    // The repository with which the repo folder is synced with, as "owner/name" (e.g. "wunditta/sublime-github-light")
     "repository": "",
 
     // The branch for file transfer.

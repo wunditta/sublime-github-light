@@ -1,17 +1,54 @@
 {
-    // Settings for GitHub Light package
-    // Every setting here can be overridden for all projects in the package settings, or per project in the .sublime-project file
+    // Settings for GitHub Light package Every setting here can be overridden for all projects in the **package settings**, or per
+    // project in the **project settings** (Edit Project) under the key "github_light" (below "settings"). One project may hold
+    // several repositories: its github_light block then has a list "repositories", one entry per repository, and an entry may
+    // carry any setting of this file for that repository. The recommended ones are grouped at the beginning. Settings for a repo
+    // are taken from per repo > project > package > default.
 
-    // The repository the folder is synced with, as "owner/name" (e.g. "wunditta/sublime-github-light")
+    // -------------------------------------------- Recommended per Repository --------------------------------------------
+
+    // The repository the repo folder is synced with, as "owner/name" (e.g. "wunditta/sublime-github-light")
     "repository": "",
+
+    // The repo folder: the local working copy of the repository, what is synced. Empty = the first folder of the project
+    // (the top one in the side bar). Absolute or relative path (a relative path is taken from the folder holding the
+    // project file); Add Repository... sets this (default: the repository's name).
+    "repo_folder": "",
 
     // The branch for file transfer.
     "branch": "main",
 
-    // The repo folder: the local working copy of the repository, what is synced. Empty = the first folder of the project
-    // (the top one in the side bar). Absolute or relative path (a relative path is taken from the folder holding the
-    // project file); New Project creates the subfolder "repo" and sets this.
-    "repo_folder": "",
+    // What the "Create Release" function asks for:
+    //   "all":   manually specify the title and the notes
+    //   "notes": the tag is used as title; the notes can be edited (default depends on release_notes_from_changelog)
+    //   "never": the default values from "notes" are taken without asking
+    // The notes open in an editor tab (Markdown, word wrap) with a banner:
+    // Ctrl+Enter, Ctrl+S or the banner's link creates the release; to cancel close the tab (ESC).
+    "ask_release_details": "all",
+
+    // Label of a new release (the options provided on the GitHub page for a new release):
+    // * "latest": marked as the latest release
+    // * "pre": pre-release
+    // * "none": neither
+    // * "" or "ask": a dropdown asks each time
+    "release_label": "latest",
+
+    // Adds or updates a moving tag. If you use this you need to update this after each new release! A moving tag is a long time
+    // support tag, which points to a real release and does not change with each new release (e.g.  v1 that always points to the
+    // latest v1.x.x release). Especially GitHub Actions are referenced that way to stay valid for a longer time
+    // (e.g. `uses: owner/action@v1`).
+    //   "ask":   ask after each release whether to move the major (v1) or minor (v1.2) tag
+    //   "major": move the major tag (v1) without asking (e.g. v1.1.1 >>> v1; v2.0.1 >>> v2)
+    //   "minor": move the minor tag (v1.2) without asking (e.g. v1.2.3 >>> v1.2; v1.3.4 >>> v1.3)
+    //   "":      do not create or update a moving tag
+    //   any other value: a fixed tag name that is moved to every release (e.g. "latest")
+    "moving_tag": "",
+
+    // For Sublime Packages: True: works like "release_notes_from_changelog" but writes the text into `messages/<tag>.txt`
+    // and binds it to messages.json. Sublime's Package Control shows this to users of a Sublime Text package after an upgrade.
+    "sublime_version_files": false,
+
+    // ------------------------------------------ Recommended per Repository - End ------------------------------------------
 
     // The repo folder as its own entry in the side bar (above the project folder), so it stands out:
     //     false = nothing is touched
@@ -65,34 +102,8 @@
     // Ask for the commit message. false: the default message is used ("Add x.md", "Update x.md", "Add 2 files, update 3 files").
     "ask_commit_message": true,
 
-    // What the "Create Release" function asks for:
-    //   "all":   manually specify the title and the notes
-    //   "notes": the tag is used as title; the notes can be edited (default depends on release_notes_from_changelog)
-    //   "never": the default values from "notes" are taken without asking
-    // The notes open in an editor tab (Markdown, word wrap) with a banner:
-    // Ctrl+Enter, Ctrl+S or the banner's link creates the release; to cancel close the tab (ESC).
-    "ask_release_details": "all",
-
     // Prefix of the version tags when creating a release ("v" -> v1.2.3, "" -> 1.2.3).
     "tag_prefix": "v",
-
-    // Adds or updates a moving tag. If you use this you need to update this after each new release! A moving tag is a long time
-    // support tag, which points to a real release and does not change with each new release (e.g.  v1 that always points to the
-    // latest v1.x.x release). Especially GitHub Actions are referenced that way to stay valid for a longer time
-    // (e.g. `uses: owner/action@v1`).
-    //   "ask":   ask after each release whether to move the major (v1) or minor (v1.2) tag
-    //   "major": move the major tag (v1) without asking (e.g. v1.1.1 >>> v1; v2.0.1 >>> v2)
-    //   "minor": move the minor tag (v1.2) without asking (e.g. v1.2.3 >>> v1.2; v1.3.4 >>> v1.3)
-    //   "":      do not create or update a moving tag
-    //   any other value: a fixed tag name that is moved to every release (e.g. "latest")
-    "moving_tag": "",
-
-    // Label of a new release (the options provided on the GitHub page for a new release):
-    // * "latest": marked as the latest release
-    // * "pre": pre-release
-    // * "none": neither
-    // * "" or "ask": a dropdown asks each time
-    "release_label": "latest",
 
     // If you maintain a `CHANGELOG.md` file (in root), setting this to true will take the release notes from there: use
     // `## [Unreleased]` (tied to level 2) for the section with the changes of the new release. The section text is taken as
@@ -100,10 +111,6 @@
     // a new section "## [Unreleased]" is added at the top. If this section is empty or missing a confirmation dialog comes up to
     // continue or cancel.
     "release_notes_from_changelog": false,
-
-    // For Sublime Packages: True: works like "release_notes_from_changelog" but writes the text into `messages/<tag>.txt`
-    // and binds it to messages.json. Sublime's Package Control shows this to users of a Sublime Text package after an upgrade.
-    "sublime_version_files": false,
 
     // Where GitHub Light writes its output (Sync, Download, Commit, Show Project Changes):
     //   "console": the output panel, shown when something is written (default)

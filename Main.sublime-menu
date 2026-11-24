@@ -7,8 +7,9 @@
                 "id": "github-light",
                 "children": [
                     { "caption": "Diff Unsaved Changes…", "command": "ghl_diff_unsaved" },
-                    { "caption": "Show Project Changes…", "command": "ghl_status" },
-                    { "caption": "File Review", "id": "github-light-main-review",
+                    { "caption": "Revert File", "command": "ghl_revert_file" },
+                    { "caption": "Show GitHub Sync Status…", "command": "ghl_status" },
+                    { "caption": "File Review on GitHub", "id": "github-light-main-review",
                       "children": [
                             { "caption": "Diff GitHub and Local in Sublime", "command": "ghl_diff" },
                             { "caption": "View on GitHub", "command": "ghl_open_online", "args": {"kind": "blob"} },
@@ -26,19 +27,31 @@
                     { "caption": "Move Tag…", "command": "ghl_move_tag" },
                     { "caption": "-" },
                     { "caption": "New Project…", "command": "ghl_new_project" },
+                    { "caption": "Add Repository…", "command": "ghl_add_repository" },
                     { "caption": "Settings", "command": "ghl_settings" }
                 ]
             }
         ]
     },
     {
-        "caption": "Preferences",
-        "mnemonic": "n",
+        "id": "project",
+        "children": [
+            { "caption": "-" },
+            { "caption": "Show GitHub Sync Status…", "command": "ghl_status", "args": {"hide_outside": true} },
+            { "caption": "Commit All to GitHub", "command": "ghl_commit", "args": {"scope": "all", "hide_outside": true} },
+            { "caption": "-" },
+            { "caption": "Create Release on GitHub…", "command": "ghl_release", "args": {"hide_outside": true} },
+            { "caption": "Move Tag on GitHub…", "command": "ghl_move_tag", "args": {"hide_outside": true} },
+            { "caption": "-" },
+            { "caption": "New GitHub Light Project…", "command": "ghl_new_project" },
+            { "caption": "Add GitHub Repository…", "command": "ghl_add_repository", "args": {"hide_outside": true} },
+            { "caption": "GitHub Light Settings", "command": "ghl_settings", "args": {"hide_outside": true} }
+        ]
+    },
+    {
         "id": "preferences",
         "children": [
             {
-                "caption": "Package Settings",
-                "mnemonic": "P",
                 "id": "package-settings",
                 "children": [
                     {
